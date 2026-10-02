@@ -37,10 +37,12 @@ import {markedHighlight} from 'marked-highlight';
 
 import {sound} from './src/audio';
 import {CharacterRenderer} from './src/character_renderer';
-import {Hero3D} from './src/hero3d';
-
-// 3D hero (src/hero3d.ts + public/models/hero.glb) is parked; flip to true to bring it back.
-const USE_3D_HERO = false;
+import {
+  WeatherCondition,
+  WeatherParticleSystem,
+  WEATHER_METADATA,
+  getWeatherForCity,
+} from './src/weather_system';
 import {
   AerialRing,
   AvatarMode,
@@ -96,8 +98,8 @@ function countryCodeToFlagEmoji(countryCode: string): string {
 @customElement('gdm-map-app')
 export class MapApp extends LitElement {
   @query('#mapContainer') mapContainerElement?: HTMLElement;
+  @query('#weatherCanvas') weatherCanvas?: HTMLCanvasElement;
   @query('#characterCanvas') characterCanvas?: HTMLCanvasElement;
-  @query('#hero3dCanvas') hero3dCanvas?: HTMLCanvasElement;
   @query('#worldMapSearchInput') worldMapSearchInputElement?: HTMLInputElement;
 
   // --- Coordinates, 3D Altitude & Camera ---
@@ -105,8 +107,8 @@ export class MapApp extends LitElement {
   @state() playerLng: number = -58.3816;
   @state() playerAltitude: number = 42; // Real altitude in meters above ground level
   @state() playerHeading: number = 195;
-  @state() playerTilt: number = 58; // Sky View tilt
-  @state() playerRange: number = 220; // Starts ALWAYS from the SKY!
+  @state() playerTilt: number = 55; // Sky View tilt
+  @state() playerRange: number = 320; // Starts in SKY VIEW alejado 100m a escala (320m)!
   @state() currentSpeedKmh: number = 0;
   @state() totalDistanceMeters: number = 0;
   @state() currentScore: number = 0;
@@ -114,6 +116,9 @@ export class MapApp extends LitElement {
   @state() currentCity: string = 'Buenos Aires';
   @state() currentCountry: string = 'Argentina';
   @state() currentFlag: string = '🇦🇷';
+
+  // --- Dynamic Weather & Atmosphere ---
+  @state() currentWeather: WeatherCondition = 'clear';
 
   // --- 3D Collision & Gameplay State ---
   @state() collisionsEnabled: boolean = true;
@@ -132,10 +137,6 @@ export class MapApp extends LitElement {
   @state() avatarMode: AvatarMode = 'tourist';
   @state() speedPreset: SpeedPreset = 'bike';
   @state() isMuted: boolean = false;
-  @state() showThemePicker: boolean = false;
-  @state() uiTheme: string = (() => {
-    try { return localStorage.getItem('ee3d-theme') || 'midnight'; } catch { return 'midnight'; }
-  })();
 
   // --- Joystick & Drive Button States ---
   @state() isJoystickActive: boolean = false;
@@ -153,6 +154,17 @@ export class MapApp extends LitElement {
   @state() toastMessage: string = '';
   @state() toastSubtext: string = '';
   @state() isOrbitalView: boolean = false;
+  @state() isAscendingToSpace: boolean = false;
+  @state() selectedOrbitalTarget: {
+    lat: number;
+    lng: number;
+    name: string;
+    country?: string;
+    flag?: string;
+  } | null = null;
+  @state() orbitalSearchQuery: string = '';
+  @state() orbitalCategory: string = 'todos';
+  @state() showEarthExplorerDrawer: boolean = false;
 
   // --- Photos & Collectibles ---
   @state() passportStamps: PassportStamp[] = [
@@ -177,7 +189,7 @@ export class MapApp extends LitElement {
   // Internal Input & Physics tracking
   private keysPressed: Record<string, boolean> = {};
   private characterRenderer?: CharacterRenderer;
-  private hero3d?: Hero3D;
+  private weatherSystem?: WeatherParticleSystem;
   private animationFrameId?: number;
   private lastFrameTime: number = 0;
   private geocodeThrottleTimer?: any;
@@ -189,7 +201,6 @@ export class MapApp extends LitElement {
 
   // Google Maps services & 3D Elements
   private map?: any;
-  private geocoder?: any;
   private playerMarker?: any;
   private collectibleMarkers: any[] = [];
   private ringMarkers: any[] = [];
@@ -215,11 +226,6 @@ export class MapApp extends LitElement {
   private boundKeyUp?: (e: KeyboardEvent) => void;
   private boundWheel?: (e: WheelEvent) => void;
   private boundResize?: () => void;
-
-  connectedCallback(): void {
-    super.connectedCallback();
-    document.documentElement.dataset.theme = this.uiTheme;
-  }
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
@@ -250,7 +256,21 @@ export class MapApp extends LitElement {
       }
 
       if (key === ' ' || e.code === 'Space') {
-        this.triggerJump();
+        if (this.isOrbitalView) {
+          if (this.selectedOrbitalTarget) {
+            this.descendToCoordinates(
+              this.selectedOrbitalTarget.lat,
+              this.selectedOrbitalTarget.lng,
+              this.selectedOrbitalTarget.name,
+              this.selectedOrbitalTarget.country,
+              this.selectedOrbitalTarget.flag,
+            );
+          } else {
+            this.flyFromOrbitToCity(this.playerLat, this.playerLng, this.currentCity, this.currentCountry, this.currentFlag, 195);
+          }
+        } else {
+          this.launchToSpace();
+        }
       } else if (key === 'r') {
         this.triggerStuntRoll();
       } else if (key === 't') {
@@ -266,7 +286,11 @@ export class MapApp extends LitElement {
       } else if (key === 'p') {
         this.showPassportModal = !this.showPassportModal;
       } else if (key === 'g') {
-        this.openWorldGlobeView();
+        if (this.isOrbitalView) {
+          this.flyFromOrbitToCity(this.playerLat, this.playerLng, this.currentCity, this.currentCountry, this.currentFlag, 195);
+        } else {
+          this.launchToSpace();
+        }
       }
     };
     window.addEventListener('keydown', this.boundKeyDown);
@@ -296,7 +320,9 @@ export class MapApp extends LitElement {
           this.characterCanvas.clientWidth,
           this.characterCanvas.clientHeight,
         );
-        this.hero3d?.resize(this.characterCanvas.clientWidth, this.characterCanvas.clientHeight);
+      }
+      if (this.weatherSystem) {
+        this.weatherSystem.resize();
       }
     };
     window.addEventListener('resize', this.boundResize);
@@ -437,9 +463,9 @@ export class MapApp extends LitElement {
       this.playerTilt = 65;
       this.showToast('🌐 Zoom Medio', 'Vuelo a velocidad crucero');
     } else if (preset === 'sky') {
-      this.playerRange = 220; // Sky View standard
-      this.playerTilt = 58;
-      this.showToast('🛰️ Vista del Cielo', 'Perspectiva aérea de la ciudad');
+      this.playerRange = 320; // Sky View alejado 100 metros a escala (de 220m a 320m)
+      this.playerTilt = 55;
+      this.showToast('🛰️ Vista del Cielo', 'Perspectiva aérea alejada a 320m a escala');
     }
   }
 
@@ -452,10 +478,10 @@ export class MapApp extends LitElement {
   }
 
   public zoomCamera(deltaMeters: number) {
-    this.playerRange = Math.max(10, Math.min(260, this.playerRange + deltaMeters));
+    this.playerRange = Math.max(10, Math.min(380, this.playerRange + deltaMeters));
     if (this.playerRange <= 22) {
       this.zoomPreset = 'close';
-    } else if (this.playerRange >= 110) {
+    } else if (this.playerRange >= 150) {
       this.zoomPreset = 'sky';
     } else {
       this.zoomPreset = 'medium';
@@ -476,25 +502,219 @@ export class MapApp extends LitElement {
   }
 
   /**
-   * Open World Globe View (Lifting into Orbit to choose any city)
+   * Launch autonomously into Outer Space to reveal the entire 3D Earth (Google Earth Mode)
    */
-  public openWorldGlobeView() {
-    this.showWorldMapModal = true;
-    this.isOrbitalView = true;
+  public launchToSpace() {
+    if (this.isAscendingToSpace) return;
+    this.isAscendingToSpace = true;
+    this.showWorldMapModal = false;
+    this.showEarthExplorerDrawer = false;
+    this.selectedOrbitalTarget = null;
+    sound.playTeleportWhoosh();
 
+    // Trigger visual rocket boost & sonic shockwave
+    if (this.characterRenderer) {
+      this.characterRenderer.triggerShockwave('#38bdf8', 280);
+    }
+
+    this.showToast('🚀 ¡Ascendiendo al Espacio Exterior!', 'Subiendo a la órbita terrestre... ¡Contempla toda la Tierra en 3D!');
+
+    // Smoothly fly camera to 12,500 km deep space (Google Earth planetary view)
     if (this.map) {
-      sound.playTeleportWhoosh();
       this.map.flyCameraTo({
         endCamera: {
           center: {lat: this.playerLat, lng: this.playerLng, altitude: 0},
           heading: this.playerHeading,
-          tilt: 10,
-          range: 9500000, // 9,500 km in space (3D Globe perspective!)
+          tilt: 0, // Direct planetary sphere view
+          range: 12500000, // 12,500 km — full planet Earth globe
         },
-        durationMillis: 2200,
+        durationMillis: 2800,
       });
     }
-    this.showToast('🌍 Vista del Globo Terrestre', 'Elige cualquier ciudad para volar desde el cielo');
+
+    setTimeout(() => {
+      this.isOrbitalView = true;
+      this.isAscendingToSpace = false;
+      this.requestUpdate();
+    }, 2400);
+  }
+
+  /**
+   * Open World Globe View (Lifting into Orbit to choose any city)
+   */
+  public openWorldGlobeView() {
+    this.launchToSpace();
+  }
+
+  /**
+   * Handle Click on the 3D Earth Globe
+   */
+  public async handleGlobeClick(lat: number, lng: number) {
+    if (!this.isOrbitalView) return;
+    sound.playCollectChime();
+
+    // Set immediate target
+    this.selectedOrbitalTarget = {
+      lat: Number(lat.toFixed(4)),
+      lng: Number(lng.toFixed(4)),
+      name: `Coordenadas: ${lat.toFixed(2)}°, ${lng.toFixed(2)}°`,
+      country: 'Planeta Tierra',
+      flag: '📍',
+    };
+    this.requestUpdate();
+
+    // Look for nearby landmark in curated destinations (< 120km)
+    let foundNearby = false;
+    for (const d of WORLD_DESTINATIONS) {
+      const dLat = (lat - d.lat) * 111139;
+      const dLng = (lng - d.lng) * 111139 * Math.cos((lat * Math.PI) / 180);
+      const dist = Math.sqrt(dLat * dLat + dLng * dLng);
+      if (dist < 120000) {
+        this.selectedOrbitalTarget = {
+          lat: d.lat,
+          lng: d.lng,
+          name: `${d.city} (${d.name})`,
+          country: d.country,
+          flag: d.flag,
+        };
+        foundNearby = true;
+        break;
+      }
+    }
+
+    if (!foundNearby) {
+      try {
+        const resp = await fetch(
+          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=8`,
+          { headers: { 'Accept-Language': 'es,en' } },
+        );
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data && data.address) {
+            const addr = data.address;
+            const city = addr.city || addr.town || addr.municipality || addr.state || addr.county || data.name || 'Región';
+            const country = addr.country || 'Planeta Tierra';
+            const countryCode = addr.country_code ? addr.country_code.toUpperCase() : '';
+            const flag = countryCodeToFlagEmoji(countryCode);
+            this.selectedOrbitalTarget = {
+              lat: Number(lat.toFixed(4)),
+              lng: Number(lng.toFixed(4)),
+              name: `${city}, ${country}`,
+              country: country,
+              flag: flag,
+            };
+            this.requestUpdate();
+          }
+        }
+      } catch (err) {
+        // Fallback name is already displayed
+      }
+    }
+    this.requestUpdate();
+  }
+
+  /**
+   * Descend directly into specified coordinates on Earth
+   */
+  public descendToCoordinates(
+    lat: number,
+    lng: number,
+    city?: string,
+    country?: string,
+    flag?: string,
+  ) {
+    const finalCity = city || this.selectedOrbitalTarget?.name || `Sector ${lat.toFixed(1)}, ${lng.toFixed(1)}`;
+    const finalCountry = country || this.selectedOrbitalTarget?.country || 'Tierra';
+    const finalFlag = flag || this.selectedOrbitalTarget?.flag || '🌍';
+
+    this.selectedOrbitalTarget = null;
+    this.showEarthExplorerDrawer = false;
+    this.showWorldMapModal = false;
+    this.isOrbitalView = false;
+    this.isAscendingToSpace = false;
+
+    this.flyFromOrbitToCity(lat, lng, finalCity, finalCountry, finalFlag, 195);
+  }
+
+  /**
+   * Teleport to a random wonder / city on Earth
+   */
+  public teleportToRandomDestination() {
+    const randomIndex = Math.floor(Math.random() * WORLD_DESTINATIONS.length);
+    const dest = WORLD_DESTINATIONS[randomIndex];
+    this.showToast('🎲 Destino Sorpresa Planetario', `Viajando a: ${dest.flag} ${dest.city} (${dest.country})`);
+
+    if (this.map && this.isOrbitalView) {
+      this.map.flyCameraTo({
+        endCamera: {
+          center: { lat: dest.lat, lng: dest.lng, altitude: 0 },
+          heading: dest.heading,
+          tilt: 0,
+          range: 8000000,
+        },
+        durationMillis: 1600,
+      });
+      setTimeout(() => {
+        this.flyFromOrbitToCity(dest.lat, dest.lng, dest.city, dest.country, dest.flag, dest.heading);
+      }, 1400);
+    } else {
+      this.flyFromOrbitToCity(dest.lat, dest.lng, dest.city, dest.country, dest.flag, dest.heading);
+    }
+  }
+
+  /**
+   * Spin Earth Globe
+   */
+  public spinGlobe(direction: 'east' | 'west') {
+    if (!this.map || !this.isOrbitalView) return;
+    const delta = direction === 'east' ? 45 : -45;
+    const newLng = (this.playerLng + delta + 540) % 360 - 180;
+    this.playerLng = newLng;
+    this.map.flyCameraTo({
+      endCamera: {
+        center: { lat: this.playerLat, lng: newLng, altitude: 0 },
+        heading: 0,
+        tilt: 0,
+        range: 12500000,
+      },
+      durationMillis: 1200,
+    });
+  }
+
+  /**
+   * Reset Globe North
+   */
+  public resetNorth() {
+    if (!this.map) return;
+    this.playerHeading = 0;
+    if (this.isOrbitalView) {
+      this.map.flyCameraTo({
+        endCamera: {
+          center: { lat: this.playerLat, lng: this.playerLng, altitude: 0 },
+          heading: 0,
+          tilt: 0,
+          range: 12500000,
+        },
+        durationMillis: 1000,
+      });
+    } else {
+      this.updateMapCamera(true);
+    }
+  }
+
+  /**
+   * Zoom Earth Globe
+   */
+  public zoomGlobe(delta: number) {
+    if (!this.map) return;
+    if (this.isOrbitalView) {
+      const currentRange = this.map.range || 12500000;
+      const newRange = Math.max(1500000, Math.min(25000000, currentRange * delta));
+      this.map.range = newRange;
+    } else {
+      if (delta < 1) this.zoomIn();
+      else this.zoomOut();
+    }
   }
 
   /**
@@ -509,7 +729,10 @@ export class MapApp extends LitElement {
     heading: number = 195,
   ) {
     this.showWorldMapModal = false;
+    this.showEarthExplorerDrawer = false;
     this.isOrbitalView = false;
+    this.isAscendingToSpace = false;
+    this.selectedOrbitalTarget = null;
 
     sound.playTeleportWhoosh();
 
@@ -517,8 +740,8 @@ export class MapApp extends LitElement {
     this.playerLng = lng;
     this.playerAltitude = 50; // Fly above street level
     this.playerHeading = heading;
-    this.playerTilt = 58;
-    this.playerRange = 220; // Always start in SKY VIEW!
+    this.playerTilt = 55;
+    this.playerRange = 320; // Always start in SKY VIEW alejado 100m a escala!
     this.zoomPreset = 'sky';
     this.currentCity = city;
     this.currentCountry = country;
@@ -526,6 +749,10 @@ export class MapApp extends LitElement {
     this.currentStreetName = `${city}, ${country}`;
     this.currentSpeedKmh = 0;
     this.ringCombo = 0;
+
+    // Apply dynamic characteristic weather for selected city
+    const cityWeather = getWeatherForCity(city);
+    this.setWeather(cityWeather, false);
 
     // Check & Add passport stamp
     const destId = `city-${city.toLowerCase().replace(/\s+/g, '-')}`;
@@ -551,8 +778,8 @@ export class MapApp extends LitElement {
         endCamera: {
           center: {lat: lat, lng: lng, altitude: this.playerAltitude},
           heading: heading,
-          tilt: 58,
-          range: 220, // Sky View!
+          tilt: 55,
+          range: 320, // Sky View alejado 100m a escala!
         },
         durationMillis: 3400,
       });
@@ -564,46 +791,73 @@ export class MapApp extends LitElement {
 
     this.spawnLocalCollectibles();
     this.spawnCityRingsAndObstacles(lat, lng);
-    this.showToast(`🚀 ¡Descenso aéreo a ${city}!`, `Iniciando vuelo desde el cielo (${flag})`);
+    const weatherMeta = WEATHER_METADATA[cityWeather];
+    this.showToast(`🚀 ¡Descenso aéreo a ${city}!`, `${flag} ${city} • ${weatherMeta.icon} ${weatherMeta.name} • Cielo a 320m`);
   }
 
   /**
    * Search and fly to ANY city on Earth
    */
-  public searchAndTeleport(query: string) {
-    if (!query.trim() || !this.geocoder) return;
+  public async searchAndTeleport(query: string) {
+    if (!query || !query.trim()) return;
 
     this.showWorldMapModal = false;
-    this.isOrbitalView = false;
+    this.showEarthExplorerDrawer = false;
+    this.selectedOrbitalTarget = null;
 
-    this.geocoder.geocode({address: query}, (results: any, status: string) => {
-      if (status === 'OK' && results && results[0]) {
-        const result = results[0];
-        const loc = result.geometry.location;
+    const cleanQuery = query.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
-        let city = query;
-        let country = '';
-        let flag = '🌐';
-
-        if (result.address_components) {
-          for (const comp of result.address_components) {
-            if (comp.types.includes('locality')) {
-              city = comp.long_name;
-            } else if (!city && comp.types.includes('administrative_area_level_1')) {
-              city = comp.long_name;
-            }
-            if (comp.types.includes('country')) {
-              country = comp.long_name;
-              flag = countryCodeToFlagEmoji(comp.short_name);
-            }
-          }
-        }
-
-        this.flyFromOrbitToCity(loc.lat(), loc.lng(), city, country || 'Mundo', flag, 195);
-      } else {
-        this.showToast('⚠️ No Encontrado', `No se encontró "${query}". Intenta con otra ciudad.`);
-      }
+    // 1. Search in local curated World Destinations & Landmarks
+    const localMatch = WORLD_DESTINATIONS.find((d) => {
+      const cityNorm = d.city.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const nameNorm = d.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const countryNorm = d.country.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      return cityNorm.includes(cleanQuery) || nameNorm.includes(cleanQuery) || countryNorm.includes(cleanQuery) || cleanQuery.includes(cityNorm);
     });
+
+    if (localMatch) {
+      this.flyFromOrbitToCity(
+        localMatch.lat,
+        localMatch.lng,
+        localMatch.city,
+        localMatch.country,
+        localMatch.flag,
+        localMatch.heading,
+      );
+      return;
+    }
+
+    // 2. Fallback to free, reliable OpenStreetMap Nominatim geocoder (No Google Cloud billing required!)
+    try {
+      this.showToast('🔍 Buscando destino en la Tierra...', `Localizando "${query}" en el mapa global`);
+      const resp = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&addressdetails=1&limit=1`,
+        {
+          headers: {
+            'Accept-Language': 'es,en',
+          },
+        },
+      );
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data && data.length > 0) {
+          const item = data[0];
+          const lat = parseFloat(item.lat);
+          const lng = parseFloat(item.lon);
+          const addr = item.address || {};
+          const city = addr.city || addr.town || addr.municipality || addr.state || item.name || query;
+          const country = addr.country || 'Planeta Tierra';
+          const countryCode = addr.country_code ? addr.country_code.toUpperCase() : '';
+          const flag = countryCodeToFlagEmoji(countryCode);
+          this.flyFromOrbitToCity(lat, lng, city, country, flag, 195);
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('Geocoding fallback search error:', err);
+    }
+
+    this.showToast('⚠️ No Encontrado', `No se encontró "${query}". Intenta con otra ciudad.`);
   }
 
   /**
@@ -624,7 +878,6 @@ export class MapApp extends LitElement {
     const loader = new Loader({
       apiKey: USER_PROVIDED_GOOGLE_MAPS_API_KEY,
       version: 'beta',
-      libraries: ['geocoding', 'routes', 'geometry'],
     });
 
     try {
@@ -633,14 +886,11 @@ export class MapApp extends LitElement {
       this.Map3DElement = maps3dLibrary.Map3DElement;
       this.Marker3DElement = maps3dLibrary.Marker3DElement;
 
-      if ((window as any).google && (window as any).google.maps) {
-        this.geocoder = new (window as any).google.maps.Geocoder();
-      }
-
       this.initializeMap();
       this.spawnLocalCollectibles();
       this.spawnCityRingsAndObstacles(this.playerLat, this.playerLng);
       this.initCharacterRenderer();
+      this.initWeatherSystem();
       this.startGameLoop();
 
       this.mapInitialized = true;
@@ -658,6 +908,18 @@ export class MapApp extends LitElement {
     if (!this.mapContainerElement || !this.Map3DElement) return;
     this.map = this.mapContainerElement;
     this.updateMapCamera(true);
+
+    // Handle clicks on 3D Earth Globe for Google Earth worldwide exploration
+    const onGlobeClick = (e: any) => {
+      const pos = e.position || e.detail?.position;
+      if (pos && typeof pos.lat === 'number' && typeof pos.lng === 'number') {
+        if (this.isOrbitalView) {
+          this.handleGlobeClick(pos.lat, pos.lng);
+        }
+      }
+    };
+    this.mapContainerElement.addEventListener('gmp-click', onGlobeClick);
+    this.mapContainerElement.addEventListener('click', onGlobeClick);
 
     if (this.Marker3DElement) {
       this.playerMarker = new this.Marker3DElement({
@@ -680,16 +942,13 @@ export class MapApp extends LitElement {
       this.characterCanvas.clientWidth,
       this.characterCanvas.clientHeight,
     );
-    if (USE_3D_HERO && this.hero3dCanvas) {
-      try {
-        this.hero3d = new Hero3D(this.hero3dCanvas);
-        this.hero3d.resize(this.characterCanvas.clientWidth, this.characterCanvas.clientHeight);
-        this.characterRenderer.hideBody = true;
-      } catch (err) {
-        console.warn('3D hero unavailable, using 2D fallback', err);
-        this.hero3d = undefined;
-      }
-    }
+  }
+
+  private initWeatherSystem() {
+    if (!this.weatherCanvas) return;
+    this.weatherSystem = new WeatherParticleSystem(this.weatherCanvas);
+    this.weatherSystem.setCondition(this.currentWeather);
+    sound.setWeatherAmbient(this.currentWeather);
   }
 
   /**
@@ -705,6 +964,7 @@ export class MapApp extends LitElement {
       this.updatePhysics(deltaTime);
       this.checkCollisionsAndRings(deltaTime);
       this.checkCollectibleCollisions();
+      this.renderWeather(deltaTime);
       this.renderCharacter(deltaTime);
 
       this.animationFrameId = requestAnimationFrame(loop);
@@ -935,7 +1195,6 @@ export class MapApp extends LitElement {
   }
 
   private renderCharacter(deltaTime: number) {
-    if (this.isOrbitalView) this.hero3d?.setVisible(false);
     if (!this.characterRenderer || this.isOrbitalView) return;
 
     let turnInput = 0;
@@ -958,8 +1217,48 @@ export class MapApp extends LitElement {
       this.cameraMode,
       deltaTime,
       verticalIntent,
+      this.playerAltitude,
+      this.playerTilt,
+      this.currentWeather,
     );
-    this.hero3d?.render(this.characterRenderer.pose);
+  }
+
+  /**
+   * Renders dynamic atmospheric weather particles and visibility attenuation
+   */
+  private renderWeather(deltaTime: number) {
+    if (!this.weatherSystem || this.isOrbitalView) return;
+
+    let turnInput = 0;
+    if (this.isJoystickActive && Math.abs(this.joystickKnobX) > 3) {
+      turnInput = Math.max(-1, Math.min(1, this.joystickKnobX / 30));
+    } else {
+      if (this.keysPressed['a'] || this.keysPressed['arrowleft']) turnInput -= 1;
+      if (this.keysPressed['d'] || this.keysPressed['arrowright']) turnInput += 1;
+    }
+
+    this.weatherSystem.updateAndRender(
+      deltaTime,
+      this.currentSpeedKmh,
+      turnInput,
+      this.playerRange,
+    );
+  }
+
+  /**
+   * Sets weather condition ('rain' | 'snow' | 'fog' | 'clear')
+   */
+  public setWeather(condition: WeatherCondition, userInitiated = true) {
+    this.currentWeather = condition;
+    if (this.weatherSystem) {
+      this.weatherSystem.setCondition(condition);
+    }
+    sound.setWeatherAmbient(condition);
+    if (userInitiated) {
+      const meta = WEATHER_METADATA[condition];
+      this.showToast(`${meta.icon} Clima: ${meta.name}`, meta.description);
+    }
+    this.requestUpdate();
   }
 
   private checkCollectibleCollisions() {
@@ -1114,25 +1413,26 @@ export class MapApp extends LitElement {
     this.geocodeThrottleTimer = setTimeout(() => {
       this.geocodeThrottleTimer = null;
 
-      const dLat = Math.abs(this.playerLat - this.lastGeocodedLat);
-      const dLng = Math.abs(this.playerLng - this.lastGeocodedLng);
-      if (dLat < 0.00035 && dLng < 0.00035) return;
+      // Find nearest landmark or display city sector without making billing-restricted API calls
+      let nearestName = '';
+      let minDistMeters = 3500;
 
-      this.lastGeocodedLat = this.playerLat;
-      this.lastGeocodedLng = this.playerLng;
-
-      if (this.geocoder) {
-        this.geocoder.geocode(
-          {location: {lat: this.playerLat, lng: this.playerLng}},
-          (results: any, status: string) => {
-            if (status === 'OK' && results && results[0]) {
-              const formatted = results[0].formatted_address;
-              this.currentStreetName = formatted.split(',').slice(0, 2).join(',');
-            }
-          },
-        );
+      for (const lm of WORLD_LANDMARK_OBSTACLES) {
+        const dLat = (this.playerLat - lm.lat) * 111139;
+        const dLng = (this.playerLng - lm.lng) * 111139 * Math.cos((this.playerLat * Math.PI) / 180);
+        const dist = Math.sqrt(dLat * dLat + dLng * dLng);
+        if (dist < minDistMeters) {
+          minDistMeters = dist;
+          nearestName = `${lm.name} (${Math.round(dist)}m)`;
+        }
       }
-    }, 3000);
+
+      if (nearestName) {
+        this.currentStreetName = nearestName;
+      } else {
+        this.currentStreetName = `${this.currentCity} • Sector ${Math.abs(Math.round(this.playerLat * 100) % 100)}-${Math.abs(Math.round(this.playerLng * 100) % 100)}`;
+      }
+    }, 2500);
   }
 
   public snapStreetViewPhoto() {
@@ -1159,22 +1459,6 @@ export class MapApp extends LitElement {
     this.capturedPhotos = [newPhoto, ...this.capturedPhotos];
     this.currentScore += 50;
     this.showToast('📸 ¡Foto 360° Capturada!', `${newPhoto.locationName} (${compass} ${newPhoto.heading}°) • +50 XP`);
-  }
-
-  public static readonly THEMES = [
-    { id: 'midnight', label: 'Medianoche', c: '#4da3ff' },
-    { id: 'ocean', label: 'Océano', c: '#5ac8fa' },
-    { id: 'sage', label: 'Salvia', c: '#a8d5ba' },
-    { id: 'rosegold', label: 'Oro rosa', c: '#f6b8ab' },
-    { id: 'gold', label: 'Dorado', c: '#f2cc8f' },
-    { id: 'orchid', label: 'Orquídea', c: '#c9a7ff' },
-    { id: 'graphite', label: 'Grafito', c: '#e5e5ea' },
-  ];
-
-  public setTheme(id: string) {
-    this.uiTheme = id;
-    document.documentElement.dataset.theme = id;
-    try { localStorage.setItem('ee3d-theme', id); } catch {}
   }
 
   public toggleAudio() {
@@ -1235,6 +1519,17 @@ export class MapApp extends LitElement {
     anchor?.scrollIntoView({behavior: 'smooth'});
   }
 
+  private getFilteredOrbitalSuggestions(): LandmarkLocation[] {
+    const q = (this.orbitalSearchQuery || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    if (!q) return [];
+    return WORLD_DESTINATIONS.filter((d) => {
+      const city = d.city.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const name = d.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const country = d.country.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      return city.includes(q) || name.includes(q) || country.includes(q);
+    }).slice(0, 6);
+  }
+
   render() {
     const formattedDistance =
       this.totalDistanceMeters >= 1000
@@ -1263,8 +1558,10 @@ export class MapApp extends LitElement {
           role="application">
         </gmp-map-3d>
 
+        <!-- Dynamic Weather & Atmospheric Particle Canvas -->
+        <canvas id="weatherCanvas" class="weather-overlay-canvas"></canvas>
+
         <!-- 3D Animated Character Canvas -->
-        <canvas id="hero3dCanvas" class="character-overlay-canvas hero3d-canvas"></canvas>
         <canvas id="characterCanvas" class="character-overlay-canvas"></canvas>
 
         <!-- Camera Flash Overlay -->
@@ -1280,270 +1577,412 @@ export class MapApp extends LitElement {
             `
           : ''}
 
-        <!-- TOP BAR: Sleek, Low-Profile Capsule (Placed at top: 8px) -->
-        <header class="game-top-bar">
-          <!-- City, Speed, Altitud & Recorrido Pill -->
-          <div class="compact-status-pill">
-            <span class="flag-icon">${this.currentFlag}</span>
-            <div class="status-info">
-              <span class="street-name">${this.currentCity}</span>
-              <span class="speed-and-coords">
-                <b>${Math.round(this.currentSpeedKmh)} KM/H</b> • ⛰️ <b>${Math.round(this.playerAltitude)}M</b> • 🗺️ <b>${formattedDistance}</b>
-              </span>
+        <!-- ========================================================
+             GOOGLE EARTH 3D / SPACE HUD (Órbita Terrestre)
+             ======================================================== -->
+        ${this.isOrbitalView ? html`
+          <!-- Google Earth Top Exploration Bar -->
+          <header class="earth-hud-top-bar">
+            <div class="earth-branding-pill">
+              <span class="earth-pulse-dot"></span>
+              <span>🌍 GOOGLE EARTH 3D</span>
             </div>
-          </div>
 
-          <!-- Aerial Ring Circuit & Combo Badges -->
-          ${this.aerialRings.length > 0
-            ? html`
-                <div class="circuit-pill" title="Anillos Aéreos Superados en la Ciudad">
-                  ⭕ <b>${this.ringsPassedCount}/${this.aerialRings.length}</b>
+            <!-- Universal Planetary Search Bar -->
+            <div class="earth-search-container">
+              <input
+                type="text"
+                class="earth-search-input"
+                placeholder="🔍 Busca cualquier ciudad, maravilla o rincón del planeta..."
+                .value=${this.orbitalSearchQuery}
+                @input=${(e: InputEvent) => {
+                  this.orbitalSearchQuery = (e.target as HTMLInputElement).value;
+                }}
+                @keydown=${(e: KeyboardEvent) => {
+                  if (e.key === 'Enter') {
+                    this.searchAndTeleport(this.orbitalSearchQuery);
+                  }
+                }} />
+              <button
+                class="earth-search-btn"
+                @click=${() => this.searchAndTeleport(this.orbitalSearchQuery)}>
+                Volar 🪂
+              </button>
+
+              <!-- Autocomplete suggestions dropdown -->
+              ${this.orbitalSearchQuery.trim().length > 0 ? html`
+                <div class="earth-suggestions-dropdown">
+                  ${this.getFilteredOrbitalSuggestions().map((s) => html`
+                    <div
+                      class="earth-suggestion-item"
+                      @click=${() => this.descendToCoordinates(s.lat, s.lng, s.city, s.country, s.flag)}>
+                      <span class="sugg-flag">${s.flag}</span>
+                      <div class="sugg-info">
+                        <span class="sugg-city">${s.city}, ${s.country}</span>
+                        <span class="sugg-desc">${s.name} • ${s.description}</span>
+                      </div>
+                    </div>
+                  `)}
+                  <div
+                    class="earth-suggestion-item"
+                    @click=${() => this.searchAndTeleport(this.orbitalSearchQuery)}>
+                    <span class="sugg-flag">🌐</span>
+                    <div class="sugg-info">
+                      <span class="sugg-city">Buscar en todo el planeta: "${this.orbitalSearchQuery}"</span>
+                      <span class="sugg-desc">Geocodificador satelital global de acceso libre</span>
+                    </div>
+                  </div>
                 </div>
-              `
-            : ''}
+              ` : ''}
+            </div>
 
-          ${this.ringCombo > 1
-            ? html`
-                <div class="combo-pill" title="Combo de Anillos Consecutivos">
-                  🔥 COMBO x${this.ringCombo}
-                </div>
-              `
-            : ''}
+            <!-- Action buttons in space -->
+            <div class="earth-actions-cluster">
+              <button
+                class="earth-action-btn random"
+                @click=${() => this.teleportToRandomDestination()}
+                title="Visitar un lugar aleatorio del mundo">
+                🎲 Aleatorio
+              </button>
+              <button
+                class="earth-action-btn"
+                @click=${() => (this.showEarthExplorerDrawer = !this.showEarthExplorerDrawer)}
+                title="Explorar ciudades y maravillas">
+                🌟 Explorar
+              </button>
+              <button
+                class="earth-action-btn descend"
+                @click=${() => this.descendToCoordinates(this.playerLat, this.playerLng, this.currentCity, this.currentCountry, this.currentFlag)}
+                title="Descender en vuelo hacia la Tierra">
+                🪂 Descender
+              </button>
+            </div>
+          </header>
 
-          <!-- Collision Mode Toggle -->
-          <button
-            class="collision-mode-toggle ${this.collisionsEnabled ? 'active' : ''}"
-            @click=${() => this.toggleCollisions()}
-            title="Alternar Colisiones con Edificios y Suelo (T)">
-            ${this.collisionsEnabled ? '🛡️ Colisión ON' : '🕊️ Libre'}
-          </button>
-
-          <!-- Top Action Buttons -->
-          <div class="top-actions">
-            <!-- World Globe & Orbit Button -->
-            <button
-              class="top-icon-btn highlight-btn"
-              @click=${() => this.openWorldGlobeView()}
-              title="Volar desde el Mapa Mundo 3D (G)">
-              🌍 Mapa Mundo
-            </button>
-
-            <!-- Passport Stamps -->
-            <button
-              class="top-icon-btn ${this.showPassportModal ? 'active' : ''}"
-              @click=${() => (this.showPassportModal = !this.showPassportModal)}
-              title="Pasaporte de Viajero (P)">
-              🛂 ${this.passportStamps.length}
-            </button>
-
-            <!-- Snap Postcard -->
-            <button
-              class="top-icon-btn"
-              @click=${() => this.snapStreetViewPhoto()}
-              title="Capturar Foto 360° (C)">
-              📸
-            </button>
-
-            <!-- UI Theme -->
-            <button
-              class="top-icon-btn theme-btn"
-              @click=${() => (this.showThemePicker = !this.showThemePicker)}
-              title="Color de la interfaz">
-              <span class="theme-dot"></span>
-            </button>
-
-            <!-- Audio Mute -->
-            <button
-              class="top-icon-btn"
-              @click=${() => this.toggleAudio()}
-              title="Sonido (M)">
-              ${this.isMuted ? '🔇' : '🔊'}
-            </button>
-          </div>
-        </header>
-
-        ${this.showThemePicker
-          ? html`
-              <div class="theme-popover" @pointerdown=${(e: Event) => e.stopPropagation()}>
-                <div class="theme-popover-title">Color</div>
-                <div class="theme-swatches">
-                  ${MapApp.THEMES.map(
-                    (t) => html`
-                      <button
-                        class="theme-swatch ${this.uiTheme === t.id ? 'selected' : ''}"
-                        style="--sw:${t.c}"
-                        title=${t.label}
-                        aria-label=${t.label}
-                        @click=${() => this.setTheme(t.id)}></button>
-                    `,
-                  )}
+          <!-- Floating Target Card when user clicks ANYWHERE on Earth -->
+          ${this.selectedOrbitalTarget ? html`
+            <div class="orbital-target-card">
+              <div class="target-card-info">
+                <span class="target-card-flag">${this.selectedOrbitalTarget.flag || '📍'}</span>
+                <div class="target-card-texts">
+                  <div class="target-card-title">${this.selectedOrbitalTarget.name}</div>
+                  <div class="target-card-coords">Coordenadas: ${this.selectedOrbitalTarget.lat.toFixed(4)}°, ${this.selectedOrbitalTarget.lng.toFixed(4)}°</div>
                 </div>
               </div>
-            `
-          : ''}
-
-        <!-- TOAST NOTIFICATION -->
-        ${this.toastMessage
-          ? html`
-              <div class="game-toast-container">
-                <div class="game-toast">
-                  <div class="toast-title">${this.toastMessage}</div>
-                  ${this.toastSubtext
-                    ? html`<div class="toast-subtext">${this.toastSubtext}</div>`
-                    : ''}
-                </div>
+              <div class="target-card-actions">
+                <button
+                  class="target-descend-btn"
+                  @click=${() => this.descendToCoordinates(this.selectedOrbitalTarget!.lat, this.selectedOrbitalTarget!.lng, this.selectedOrbitalTarget!.name, this.selectedOrbitalTarget!.country, this.selectedOrbitalTarget!.flag)}>
+                  ⚡ Descender en Vuelo Aquí 🪂
+                </button>
+                <button class="target-close-btn" @click=${() => (this.selectedOrbitalTarget = null)}>✕</button>
               </div>
-            `
-          : ''}
+            </div>
+          ` : ''}
 
-        <!-- BOTTOM HUD: Low, sleek, ergonomic and fully interactive -->
-        <footer class="game-bottom-hud">
-          <!-- LEFT: Virtual Steering Joystick (360° Manejo) -->
-          <div
-            class="virtual-joystick-base"
-            @pointerdown=${(e: PointerEvent) => this.handleJoystickPointerDown(e)}
-            @pointermove=${(e: PointerEvent) => this.handleJoystickPointerMove(e)}
-            @pointerup=${(e: PointerEvent) => this.handleJoystickPointerUp(e)}
-            @pointercancel=${(e: PointerEvent) => this.handleJoystickPointerUp(e)}
-            title="Joystick 360° (Arrastra para girar)">
-            <div class="joystick-ring"></div>
+          <!-- Floating Earth Discovery Drawer -->
+          ${this.showEarthExplorerDrawer ? html`
+            <div class="earth-explorer-drawer">
+              <div class="drawer-top-row">
+                <div class="drawer-cat-tabs">
+                  ${['todos', 'metropolis', 'wonder', 'nature', 'island'].map((cat) => html`
+                    <button
+                      class="drawer-cat-btn ${this.orbitalCategory === cat ? 'active' : ''}"
+                      @click=${() => (this.orbitalCategory = cat)}>
+                      ${cat === 'todos' ? '🌍 Todos' : cat === 'metropolis' ? '🏙️ Metrópolis' : cat === 'wonder' ? '⛰️ Maravillas' : cat === 'nature' ? '🏔️ Naturaleza' : '🏝️ Islas'}
+                    </button>
+                  `)}
+                </div>
+                <button class="target-close-btn" @click=${() => (this.showEarthExplorerDrawer = false)}>✕</button>
+              </div>
+              <div class="drawer-dest-grid">
+                ${(this.orbitalCategory === 'todos'
+                  ? WORLD_DESTINATIONS
+                  : WORLD_DESTINATIONS.filter((d) => (d.category || 'metropolis') === this.orbitalCategory)
+                ).map((dest) => html`
+                  <div
+                    class="drawer-dest-card"
+                    @click=${() => this.descendToCoordinates(dest.lat, dest.lng, dest.city, dest.country, dest.flag)}>
+                    <span class="drawer-card-flag">${dest.flag}</span>
+                    <div class="drawer-card-texts">
+                      <div class="drawer-card-city">${dest.city}</div>
+                      <div class="drawer-card-landmark">${dest.name}</div>
+                    </div>
+                  </div>
+                `)}
+              </div>
+            </div>
+          ` : ''}
+
+          <!-- Bottom Left Space Telemetry Pill -->
+          <div class="orbital-telemetry-pill">
+            <span>🛰️ Órbita Terrestre: <b>12,500 km</b></span>
+            <span>🌍 Haz clic en cualquier lugar del planeta para descender</span>
+          </div>
+
+          <!-- Bottom Right Earth Navigation Controls -->
+          <div class="earth-nav-controls">
+            <button class="earth-nav-btn" @click=${() => this.zoomGlobe(0.6)} title="Acercar Globo (＋)">＋</button>
+            <button class="earth-nav-btn" @click=${() => this.zoomGlobe(1.5)} title="Alejar Globo (－)">－</button>
+            <button class="earth-nav-btn" @click=${() => this.spinGlobe('east')} title="Girar Globo Este (🔄)">🔄</button>
+            <button class="earth-nav-btn" @click=${() => this.resetNorth()} title="Alinear Norte (🧭)">🧭</button>
+          </div>
+        ` : html`
+          <!-- ========================================================
+               CITY FLIGHT HUD (Vuelo 3D sobre Ciudades)
+               ======================================================== -->
+          <header class="game-top-bar">
+            <!-- City, Speed, Altitud & Recorrido Pill -->
+            <div class="compact-status-pill">
+              <span class="flag-icon">${this.currentFlag}</span>
+              <div class="status-info">
+                <span class="street-name">${this.currentCity}</span>
+                <span class="speed-and-coords">
+                  <b>${Math.round(this.currentSpeedKmh)} KM/H</b> • ⛰️ <b>${Math.round(this.playerAltitude)}M</b> • 🗺️ <b>${formattedDistance}</b>
+                </span>
+              </div>
+            </div>
+
+            <!-- Aerial Ring Circuit & Combo Badges -->
+            ${this.aerialRings.length > 0
+              ? html`
+                  <div class="circuit-pill" title="Anillos Aéreos Superados en la Ciudad">
+                    ⭕ <b>${this.ringsPassedCount}/${this.aerialRings.length}</b>
+                  </div>
+                `
+              : ''}
+
+            ${this.ringCombo > 1
+              ? html`
+                  <div class="combo-pill" title="Combo de Anillos Consecutivos">
+                    🔥 COMBO x${this.ringCombo}
+                  </div>
+                `
+              : ''}
+
+            <!-- Collision Mode Toggle -->
+            <button
+              class="collision-mode-toggle ${this.collisionsEnabled ? 'active' : ''}"
+              @click=${() => this.toggleCollisions()}
+              title="Alternar Colisiones con Edificios y Suelo (T)">
+              ${this.collisionsEnabled ? '🛡️ Colisión ON' : '🕊️ Libre'}
+            </button>
+
+            <!-- Dynamic Weather Condition Selector Capsule -->
+            <div class="weather-selector-pill" title="Condición Climática Dinámica">
+              <button
+                class="weather-option-btn ${this.currentWeather === 'rain' ? 'active' : ''}"
+                @click=${() => this.setWeather('rain')}
+                title="🌧️ Lluvia">
+                🌧️
+              </button>
+              <button
+                class="weather-option-btn ${this.currentWeather === 'snow' ? 'active' : ''}"
+                @click=${() => this.setWeather('snow')}
+                title="❄️ Nieve">
+                ❄️
+              </button>
+              <button
+                class="weather-option-btn ${this.currentWeather === 'fog' ? 'active' : ''}"
+                @click=${() => this.setWeather('fog')}
+                title="🌫️ Niebla">
+                🌫️
+              </button>
+              <button
+                class="weather-option-btn ${this.currentWeather === 'clear' ? 'active' : ''}"
+                @click=${() => this.setWeather('clear')}
+                title="☀️ Despejado">
+                ☀️
+              </button>
+            </div>
+
+            <!-- Top Action Buttons -->
+            <div class="top-actions">
+              <!-- Space Launch Button (Hagamos el juego infinito... botón de espacio y sube solo al espacio) -->
+              <button
+                class="top-icon-btn space-launch-btn"
+                @click=${() => this.launchToSpace()}
+                title="Subir al Espacio Exterior y ver toda la Tierra en 3D (Espacio / G)">
+                🚀 Espacio
+              </button>
+
+              <!-- Passport Stamps -->
+              <button
+                class="top-icon-btn ${this.showPassportModal ? 'active' : ''}"
+                @click=${() => (this.showPassportModal = !this.showPassportModal)}
+                title="Pasaporte de Viajero (P)">
+                🛂 ${this.passportStamps.length}
+              </button>
+
+              <!-- Snap Postcard -->
+              <button
+                class="top-icon-btn"
+                @click=${() => this.snapStreetViewPhoto()}
+                title="Capturar Foto 360° (C)">
+                📸
+              </button>
+
+              <!-- Audio Mute -->
+              <button
+                class="top-icon-btn"
+                @click=${() => this.toggleAudio()}
+                title="Sonido (M)">
+                ${this.isMuted ? '🔇' : '🔊'}
+              </button>
+            </div>
+          </header>
+
+          <!-- BOTTOM HUD: Virtual Steering Joystick, Zoom, and Drive Cluster -->
+          <footer class="game-bottom-hud">
+            <!-- LEFT: Virtual Steering Joystick -->
             <div
-              class="joystick-knob"
-              style="transform: translate(${this.joystickKnobX}px, ${this.joystickKnobY}px);">
-              <span class="joystick-icon">🧭</span>
-            </div>
-          </div>
-
-          <!-- CENTER: Sleek Low-Profile Camera & Zoom Dock -->
-          <div class="camera-zoom-bar">
-            <!-- Camera Mode (1ª / 3ª persona) -->
-            <div class="segment-group">
-              <button
-                class="seg-btn ${this.cameraMode === 'first_person' ? 'active' : ''}"
-                @click=${() => this.setCameraMode('first_person')}
-                title="Vista en 1ª Persona (Nivel calle, tecla V)">
-                👁️ 1ª
-              </button>
-              <button
-                class="seg-btn ${this.cameraMode === 'third_person' ? 'active' : ''}"
-                @click=${() => this.setCameraMode('third_person')}
-                title="Vista en 3ª Persona (Héroe volando)">
-                🦸 3ª
-              </button>
+              class="virtual-joystick-base"
+              @pointerdown=${(e: PointerEvent) => this.handleJoystickPointerDown(e)}
+              @pointermove=${(e: PointerEvent) => this.handleJoystickPointerMove(e)}
+              @pointerup=${(e: PointerEvent) => this.handleJoystickPointerUp(e)}
+              @pointercancel=${(e: PointerEvent) => this.handleJoystickPointerUp(e)}
+              title="Joystick 360° (Arrastra para girar)">
+              <div class="joystick-ring"></div>
+              <div
+                class="joystick-knob"
+                style="transform: translate(${this.joystickKnobX}px, ${this.joystickKnobY}px);">
+                <span class="joystick-icon">🧭</span>
+              </div>
             </div>
 
-            <!-- Zoom Presets (Starts in Cielo / Sky!) -->
-            <div class="segment-group">
-              <button
-                class="seg-btn ${this.zoomPreset === 'close' ? 'active' : ''}"
-                @click=${() => this.setZoomPreset('close')}
-                title="Zoom Cerca">
-                Cerca
-              </button>
-              <button
-                class="seg-btn ${this.zoomPreset === 'medium' ? 'active' : ''}"
-                @click=${() => this.setZoomPreset('medium')}
-                title="Zoom Medio">
-                Medio
-              </button>
-              <button
-                class="seg-btn ${this.zoomPreset === 'sky' ? 'active' : ''}"
-                @click=${() => this.setZoomPreset('sky')}
-                title="Vista del Cielo (Predeterminada)">
-                Cielo
-              </button>
+            <!-- CENTER: Camera Mode & Zoom Dock -->
+            <div class="camera-zoom-bar">
+              <div class="segment-group">
+                <button
+                  class="seg-btn ${this.cameraMode === 'first_person' ? 'active' : ''}"
+                  @click=${() => this.setCameraMode('first_person')}
+                  title="Vista en 1ª Persona (Tecla V)">
+                  👁️ 1ª
+                </button>
+                <button
+                  class="seg-btn ${this.cameraMode === 'third_person' ? 'active' : ''}"
+                  @click=${() => this.setCameraMode('third_person')}
+                  title="Vista en 3ª Persona">
+                  🦸 3ª
+                </button>
+              </div>
+
+              <div class="segment-group">
+                <button
+                  class="seg-btn ${this.zoomPreset === 'close' ? 'active' : ''}"
+                  @click=${() => this.setZoomPreset('close')}
+                  title="Zoom Cerca">
+                  Cerca
+                </button>
+                <button
+                  class="seg-btn ${this.zoomPreset === 'medium' ? 'active' : ''}"
+                  @click=${() => this.setZoomPreset('medium')}
+                  title="Zoom Medio">
+                  Medio
+                </button>
+                <button
+                  class="seg-btn ${this.zoomPreset === 'sky' ? 'active' : ''}"
+                  @click=${() => this.setZoomPreset('sky')}
+                  title="Vista del Cielo">
+                  Cielo
+                </button>
+              </div>
+
+              <div class="zoom-stepper">
+                <button class="zoom-step-btn" @click=${() => this.zoomIn()} title="Acercar">＋</button>
+                <button class="zoom-step-btn" @click=${() => this.zoomOut()} title="Alejar">－</button>
+              </div>
             </div>
 
-            <!-- Zoom Steppers -->
-            <div class="zoom-stepper">
-              <button class="zoom-step-btn" @click=${() => this.zoomIn()} title="Acercar">＋</button>
-              <button class="zoom-step-btn" @click=${() => this.zoomOut()} title="Alejar">－</button>
-            </div>
-          </div>
+            <!-- RIGHT: Drive, Vertical Flight & Stunt Controls -->
+            <div class="drive-buttons-cluster">
+              <div class="vertical-controls">
+                <button
+                  class="btn-vert ${this.isClimbing ? 'pressing' : ''}"
+                  @pointerdown=${() => {
+                    this.isClimbing = true;
+                  }}
+                  @pointerup=${() => {
+                    this.isClimbing = false;
+                  }}
+                  @pointerleave=${() => {
+                    this.isClimbing = false;
+                  }}
+                  title="Ascender Altitud (E)">
+                  ▲ SUBIR
+                </button>
+                <button
+                  class="btn-vert btn-space-launch-vert"
+                  @click=${() => this.launchToSpace()}
+                  title="Subir al Espacio Exterior y ver toda la Tierra (Espacio / G)">
+                  🚀 ESPACIO
+                </button>
+                <button
+                  class="btn-vert ${this.isDiving ? 'pressing' : ''}"
+                  @pointerdown=${() => {
+                    this.isDiving = true;
+                  }}
+                  @pointerup=${() => {
+                    this.isDiving = false;
+                  }}
+                  @pointerleave=${() => {
+                    this.isDiving = false;
+                  }}
+                  title="Descender Altitud (Q)">
+                  ▼ BAJAR
+                </button>
+              </div>
 
-          <!-- RIGHT: Drive, Vertical Flight & Stunt Controls -->
-          <div class="drive-buttons-cluster">
-            <!-- Vertical Flight Controls (Subir / Bajar Altitud) -->
-            <div class="vertical-controls">
+              <!-- Acrobacia: Giro de Barril 360° -->
               <button
-                class="btn-vert ${this.isClimbing ? 'pressing' : ''}"
+                class="drive-btn btn-stunt"
+                @click=${() => this.triggerStuntRoll()}
+                title="Acrobacia: Giro de Barril (Tecla R)">
+                🌀 GIRO
+              </button>
+
+              <!-- Turbo Supersónico -->
+              <button
+                class="drive-btn btn-turbo ${this.isTurboActive ? 'pressing' : ''}"
+                @pointerdown=${() => this.triggerTurboBoost()}
+                title="Turbo Supersónico Mach (Tecla Shift)">
+                ⚡ TURBO
+              </button>
+
+              <!-- Frenar -->
+              <button
+                class="drive-btn btn-brake ${this.isBraking ? 'pressing' : ''}"
                 @pointerdown=${() => {
-                  this.isClimbing = true;
+                  this.isBraking = true;
                 }}
                 @pointerup=${() => {
-                  this.isClimbing = false;
+                  this.isBraking = false;
                 }}
                 @pointerleave=${() => {
-                  this.isClimbing = false;
+                  this.isBraking = false;
                 }}
-                title="Ascender / Subir Altitud (Espacio / E)">
-                ▲ SUBIR
+                title="Frenar (S / Flecha abajo)">
+                🛑 FRENO
               </button>
+
+              <!-- Acelerar -->
               <button
-                class="btn-vert ${this.isDiving ? 'pressing' : ''}"
+                class="drive-btn btn-gas ${this.isAccelerating ? 'pressing' : ''}"
                 @pointerdown=${() => {
-                  this.isDiving = true;
+                  this.isAccelerating = true;
                 }}
                 @pointerup=${() => {
-                  this.isDiving = false;
+                  this.isAccelerating = false;
                 }}
                 @pointerleave=${() => {
-                  this.isDiving = false;
+                  this.isAccelerating = false;
                 }}
-                title="Descender / Bajar Altitud (Q)">
-                ▼ BAJAR
+                title="Acelerar hacia adelante (W / Flecha arriba)">
+                ⚡ ACEL
               </button>
             </div>
-
-            <!-- Acrobacia: Giro de Barril 360° -->
-            <button
-              class="drive-btn btn-stunt"
-              @click=${() => this.triggerStuntRoll()}
-              title="Acrobacia: Giro de Barril 360° (Tecla R)">
-              🌀 GIRO
-            </button>
-
-            <!-- Turbo Supersónico -->
-            <button
-              class="drive-btn btn-turbo ${this.isTurboActive ? 'pressing' : ''}"
-              @pointerdown=${() => this.triggerTurboBoost()}
-              title="Turbo Supersónico Mach (Tecla Shift)">
-              ⚡ TURBO
-            </button>
-
-            <!-- Frenar (Brake) -->
-            <button
-              class="drive-btn btn-brake ${this.isBraking ? 'pressing' : ''}"
-              @pointerdown=${() => {
-                this.isBraking = true;
-              }}
-              @pointerup=${() => {
-                this.isBraking = false;
-              }}
-              @pointerleave=${() => {
-                this.isBraking = false;
-              }}
-              title="Frenar (S / Flecha abajo)">
-              🛑 FRENO
-            </button>
-
-            <!-- Acelerar (Gas) -->
-            <button
-              class="drive-btn btn-gas ${this.isAccelerating ? 'pressing' : ''}"
-              @pointerdown=${() => {
-                this.isAccelerating = true;
-              }}
-              @pointerup=${() => {
-                this.isAccelerating = false;
-              }}
-              @pointerleave=${() => {
-                this.isAccelerating = false;
-              }}
-              title="Acelerar hacia adelante (W / Flecha arriba)">
-              ⚡ ACEL
-            </button>
-          </div>
-        </footer>
+          </footer>
+        `}
 
         <!-- WORLD MAP MODAL ("Elegir Cualquier Ciudad del Mundo y Volar") -->
         ${this.showWorldMapModal
@@ -1625,7 +2064,10 @@ export class MapApp extends LitElement {
                             )}>
                           <div class="city-flag-badge">${dest.flag}</div>
                           <div class="city-card-info">
-                            <div class="city-card-name">${dest.city}</div>
+                            <div class="city-card-name">
+                              ${dest.city}
+                              <span class="city-weather-tag">${WEATHER_METADATA[getWeatherForCity(dest.city)].icon} ${WEATHER_METADATA[getWeatherForCity(dest.city)].name}</span>
+                            </div>
                             <div class="city-card-landmark">${dest.name}</div>
                             <div class="city-card-desc">${dest.description}</div>
                           </div>
