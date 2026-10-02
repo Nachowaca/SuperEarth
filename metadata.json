@@ -1,0 +1,9 @@
+{
+  "name": "Earth Explorer 3D - Street View Open World",
+  "description": "An open world 3D game across the entire world with a 3D character who walks and drives like the Google Maps Street View car, with missions, teleport, and camera controls.",
+  "requestFramePermissions": [],
+  "prompt": "",
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
