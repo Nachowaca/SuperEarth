@@ -37,6 +37,10 @@ import {markedHighlight} from 'marked-highlight';
 
 import {sound} from './src/audio';
 import {CharacterRenderer} from './src/character_renderer';
+import {Hero3D} from './src/hero3d';
+
+// 3D hero (src/hero3d.ts + public/models/hero.glb) is parked; flip to true to bring it back.
+const USE_3D_HERO = false;
 import {
   AerialRing,
   AvatarMode,
@@ -93,6 +97,7 @@ function countryCodeToFlagEmoji(countryCode: string): string {
 export class MapApp extends LitElement {
   @query('#mapContainer') mapContainerElement?: HTMLElement;
   @query('#characterCanvas') characterCanvas?: HTMLCanvasElement;
+  @query('#hero3dCanvas') hero3dCanvas?: HTMLCanvasElement;
   @query('#worldMapSearchInput') worldMapSearchInputElement?: HTMLInputElement;
 
   // --- Coordinates, 3D Altitude & Camera ---
@@ -127,6 +132,10 @@ export class MapApp extends LitElement {
   @state() avatarMode: AvatarMode = 'tourist';
   @state() speedPreset: SpeedPreset = 'bike';
   @state() isMuted: boolean = false;
+  @state() showThemePicker: boolean = false;
+  @state() uiTheme: string = (() => {
+    try { return localStorage.getItem('ee3d-theme') || 'midnight'; } catch { return 'midnight'; }
+  })();
 
   // --- Joystick & Drive Button States ---
   @state() isJoystickActive: boolean = false;
@@ -168,6 +177,7 @@ export class MapApp extends LitElement {
   // Internal Input & Physics tracking
   private keysPressed: Record<string, boolean> = {};
   private characterRenderer?: CharacterRenderer;
+  private hero3d?: Hero3D;
   private animationFrameId?: number;
   private lastFrameTime: number = 0;
   private geocodeThrottleTimer?: any;
@@ -205,6 +215,11 @@ export class MapApp extends LitElement {
   private boundKeyUp?: (e: KeyboardEvent) => void;
   private boundWheel?: (e: WheelEvent) => void;
   private boundResize?: () => void;
+
+  connectedCallback(): void {
+    super.connectedCallback();
+    document.documentElement.dataset.theme = this.uiTheme;
+  }
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
@@ -281,6 +296,7 @@ export class MapApp extends LitElement {
           this.characterCanvas.clientWidth,
           this.characterCanvas.clientHeight,
         );
+        this.hero3d?.resize(this.characterCanvas.clientWidth, this.characterCanvas.clientHeight);
       }
     };
     window.addEventListener('resize', this.boundResize);
@@ -664,6 +680,16 @@ export class MapApp extends LitElement {
       this.characterCanvas.clientWidth,
       this.characterCanvas.clientHeight,
     );
+    if (USE_3D_HERO && this.hero3dCanvas) {
+      try {
+        this.hero3d = new Hero3D(this.hero3dCanvas);
+        this.hero3d.resize(this.characterCanvas.clientWidth, this.characterCanvas.clientHeight);
+        this.characterRenderer.hideBody = true;
+      } catch (err) {
+        console.warn('3D hero unavailable, using 2D fallback', err);
+        this.hero3d = undefined;
+      }
+    }
   }
 
   /**
@@ -909,6 +935,7 @@ export class MapApp extends LitElement {
   }
 
   private renderCharacter(deltaTime: number) {
+    if (this.isOrbitalView) this.hero3d?.setVisible(false);
     if (!this.characterRenderer || this.isOrbitalView) return;
 
     let turnInput = 0;
@@ -932,6 +959,7 @@ export class MapApp extends LitElement {
       deltaTime,
       verticalIntent,
     );
+    this.hero3d?.render(this.characterRenderer.pose);
   }
 
   private checkCollectibleCollisions() {
@@ -1133,6 +1161,22 @@ export class MapApp extends LitElement {
     this.showToast('📸 ¡Foto 360° Capturada!', `${newPhoto.locationName} (${compass} ${newPhoto.heading}°) • +50 XP`);
   }
 
+  public static readonly THEMES = [
+    { id: 'midnight', label: 'Medianoche', c: '#4da3ff' },
+    { id: 'ocean', label: 'Océano', c: '#5ac8fa' },
+    { id: 'sage', label: 'Salvia', c: '#a8d5ba' },
+    { id: 'rosegold', label: 'Oro rosa', c: '#f6b8ab' },
+    { id: 'gold', label: 'Dorado', c: '#f2cc8f' },
+    { id: 'orchid', label: 'Orquídea', c: '#c9a7ff' },
+    { id: 'graphite', label: 'Grafito', c: '#e5e5ea' },
+  ];
+
+  public setTheme(id: string) {
+    this.uiTheme = id;
+    document.documentElement.dataset.theme = id;
+    try { localStorage.setItem('ee3d-theme', id); } catch {}
+  }
+
   public toggleAudio() {
     this.isMuted = sound.toggleMute();
     this.showToast(this.isMuted ? '🔇 Audio Silenciado' : '🔊 Audio Activado', '');
@@ -1220,6 +1264,7 @@ export class MapApp extends LitElement {
         </gmp-map-3d>
 
         <!-- 3D Animated Character Canvas -->
+        <canvas id="hero3dCanvas" class="character-overlay-canvas hero3d-canvas"></canvas>
         <canvas id="characterCanvas" class="character-overlay-canvas"></canvas>
 
         <!-- Camera Flash Overlay -->
@@ -1299,6 +1344,14 @@ export class MapApp extends LitElement {
               📸
             </button>
 
+            <!-- UI Theme -->
+            <button
+              class="top-icon-btn theme-btn"
+              @click=${() => (this.showThemePicker = !this.showThemePicker)}
+              title="Color de la interfaz">
+              <span class="theme-dot"></span>
+            </button>
+
             <!-- Audio Mute -->
             <button
               class="top-icon-btn"
@@ -1308,6 +1361,26 @@ export class MapApp extends LitElement {
             </button>
           </div>
         </header>
+
+        ${this.showThemePicker
+          ? html`
+              <div class="theme-popover" @pointerdown=${(e: Event) => e.stopPropagation()}>
+                <div class="theme-popover-title">Color</div>
+                <div class="theme-swatches">
+                  ${MapApp.THEMES.map(
+                    (t) => html`
+                      <button
+                        class="theme-swatch ${this.uiTheme === t.id ? 'selected' : ''}"
+                        style="--sw:${t.c}"
+                        title=${t.label}
+                        aria-label=${t.label}
+                        @click=${() => this.setTheme(t.id)}></button>
+                    `,
+                  )}
+                </div>
+              </div>
+            `
+          : ''}
 
         <!-- TOAST NOTIFICATION -->
         ${this.toastMessage

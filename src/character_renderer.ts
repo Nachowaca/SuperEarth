@@ -4,6 +4,7 @@
  */
 
 import { AvatarMode } from './game_types';
+import type { HeroPose } from './hero3d';
 
 interface WindParticle {
   x: number;
@@ -83,6 +84,15 @@ export class CharacterRenderer {
   private altitudeVy: number = 0;
   public isBoosting: boolean = false;
   public onStepSound?: (isLeft: boolean) => void;
+
+  /** When true the 3D hero (hero3d.ts) draws the body; this class keeps drawing FX only. */
+  public hideBody: boolean = false;
+  /** Latest kinematics, consumed by the 3D hero every frame. */
+  public pose: HeroPose = {
+    visible: false, viewScale: 1, flightPose: 0, bodyYaw: 0, bankAngle: 0, pitchAngle: 0,
+    barrelRollAngle: 0, collisionWobble: 0, hoverBob: 0, altitudeBoost: 0, turnCentrifugal: 0,
+    flightPhase: 0, capePhase: 0, isMoving: false, speedKmh: 0,
+  };
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -185,6 +195,7 @@ export class CharacterRenderer {
     ctx.clearRect(0, 0, w, h);
 
     if (cameraMode === 'first_person') {
+      this.pose.visible = false;
       return;
     }
 
@@ -271,6 +282,24 @@ export class CharacterRenderer {
       this.collisionWobble = 0;
     }
 
+    this.pose = {
+      visible: avatarMode !== 'car',
+      viewScale,
+      flightPose: smoothFlightPose,
+      bodyYaw: this.bodyYaw,
+      bankAngle: this.bankAngle,
+      pitchAngle: this.pitchAngle,
+      barrelRollAngle: this.barrelRollAngle,
+      collisionWobble: this.collisionWobble,
+      hoverBob: this.hoverBob,
+      altitudeBoost: this.altitudeBoost,
+      turnCentrifugal: this.turnCentrifugal,
+      flightPhase: this.flightPhase,
+      capePhase: this.capePhase,
+      isMoving,
+      speedKmh,
+    };
+
     // Render wind speed lines if flying fast
     if (isMoving && speedKmh > 15) {
       this.renderWindTrails(ctx, anchorX, anchorY, viewScale, speedKmh, deltaTime);
@@ -311,7 +340,7 @@ export class CharacterRenderer {
 
     if (avatarMode === 'car') {
       this.renderStreetViewCar(ctx, isMoving, speedKmh, turnDirection);
-    } else {
+    } else if (!this.hideBody) {
       this.renderCartoonSuperman(
         ctx,
         isMoving,
