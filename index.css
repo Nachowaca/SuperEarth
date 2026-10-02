@@ -89,6 +89,60 @@ html, body, #root {
   z-index: 10;
 }
 
+/* Weather & Atmospheric Overlay Canvas */
+.weather-overlay-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* Dynamic Weather Selector Pill */
+.weather-selector-pill {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: rgba(15, 23, 42, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 9999px;
+  padding: 2px 4px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+
+.weather-option-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 27px;
+  height: 27px;
+  border-radius: 50%;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.18s ease;
+  opacity: 0.65;
+}
+
+.weather-option-btn:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.16);
+  transform: scale(1.1);
+}
+
+.weather-option-btn.active {
+  opacity: 1;
+  background: rgba(56, 189, 248, 0.28);
+  border: 1px solid rgba(56, 189, 248, 0.65);
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.45);
+  transform: scale(1.08);
+}
+
 /* Camera Shutter Flash Effect */
 .camera-flash-overlay {
   position: absolute;
@@ -1066,6 +1120,21 @@ html, body, #root {
   margin-bottom: 2px;
 }
 
+.city-weather-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: rgba(56, 189, 248, 0.15);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 9999px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #7dd3fc;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
 .dest-desc {
   font-size: 10.5px;
   color: #94a3b8;
@@ -1504,6 +1573,513 @@ html, body, #root {
   border-radius: 14px;
   padding: 20px;
   text-align: center;
+}
+
+/* ========================================================
+   SPACE LAUNCH & GOOGLE EARTH 3D MODE STYLES
+   ======================================================== */
+
+/* Space Launch Button in Top Bar */
+.space-launch-btn {
+  background: linear-gradient(135deg, #4f46e5, #7c3aed, #06b6d4) !important;
+  background-size: 200% 200% !important;
+  animation: cosmicGradient 4s ease infinite !important;
+  border: 1.5px solid #a78bfa !important;
+  color: #fff !important;
+  font-weight: 800 !important;
+  box-shadow: 0 0 16px rgba(124, 58, 237, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.4) !important;
+  letter-spacing: 0.3px;
+  padding: 0 14px !important;
+}
+
+.space-launch-btn:hover {
+  transform: translateY(-1.5px) scale(1.05);
+  box-shadow: 0 0 24px rgba(124, 58, 237, 0.85) !important;
+}
+
+/* Space Launch Button in Vertical Flight Cluster */
+.btn-space-launch-vert {
+  background: linear-gradient(135deg, #312e81, #6366f1) !important;
+  border: 1.5px solid #818cf8 !important;
+  color: #fff !important;
+  font-weight: 800 !important;
+  font-size: 9.5px !important;
+  box-shadow: 0 0 12px rgba(99, 102, 241, 0.45) !important;
+}
+
+.btn-space-launch-vert:hover {
+  filter: brightness(1.2);
+  transform: scale(1.04);
+}
+
+@keyframes cosmicGradient {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+/* Google Earth Top Exploration Bar */
+.earth-hud-top-bar {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 50;
+  pointer-events: auto;
+}
+
+.earth-branding-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(11, 15, 25, 0.85);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 9999px;
+  padding: 6px 14px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5), 0 0 12px rgba(56, 189, 248, 0.2);
+}
+
+.earth-pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #38bdf8;
+  box-shadow: 0 0 8px #38bdf8;
+  animation: pulse 1.8s infinite;
+}
+
+/* Universal Search Input in Space */
+.earth-search-container {
+  flex: 1;
+  max-width: 600px;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.earth-search-input {
+  width: 100%;
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1.5px solid rgba(56, 189, 248, 0.4);
+  border-radius: 9999px;
+  padding: 10px 105px 10px 18px;
+  color: #fff;
+  font-size: 13.5px;
+  font-weight: 500;
+  outline: none;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55), inset 0 1px 2px rgba(255, 255, 255, 0.1);
+  transition: all 0.2s ease;
+}
+
+.earth-search-input:focus {
+  border-color: #38bdf8;
+  background: rgba(15, 23, 42, 0.95);
+  box-shadow: 0 0 20px rgba(56, 189, 248, 0.45);
+}
+
+.earth-search-btn {
+  position: absolute;
+  right: 5px;
+  background: linear-gradient(135deg, #0284c7, #2563eb);
+  border: none;
+  border-radius: 9999px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.4);
+}
+
+.earth-search-btn:hover {
+  filter: brightness(1.2);
+  transform: scale(1.03);
+}
+
+/* Autocomplete suggestions dropdown */
+.earth-suggestions-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background: rgba(11, 15, 25, 0.96);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  border-radius: 14px;
+  max-height: 320px;
+  overflow-y: auto;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.75);
+  z-index: 100;
+  padding: 6px;
+}
+
+.earth-suggestion-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+  color: #f1f5f9;
+}
+
+.earth-suggestion-item:hover {
+  background: rgba(56, 189, 248, 0.18);
+}
+
+.sugg-flag {
+  font-size: 18px;
+}
+
+.sugg-info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.sugg-city {
+  font-weight: 700;
+  font-size: 12.5px;
+  color: #fff;
+}
+
+.sugg-desc {
+  font-size: 10.5px;
+  color: #94a3b8;
+}
+
+/* Earth Actions Buttons */
+.earth-actions-cluster {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.earth-action-btn {
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 9999px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 7px 13px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  transition: all 0.15s ease;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  white-space: nowrap;
+}
+
+.earth-action-btn:hover {
+  background: rgba(30, 41, 59, 0.95);
+  border-color: rgba(56, 189, 248, 0.5);
+  transform: translateY(-1px);
+}
+
+.earth-action-btn.random {
+  background: linear-gradient(135deg, #7c3aed, #9333ea);
+  border-color: #c084fc;
+}
+
+.earth-action-btn.descend {
+  background: linear-gradient(135deg, #059669, #10b981);
+  border-color: #34d399;
+}
+
+/* Floating Selected Target Card on Globe Click */
+.orbital-target-card {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(11, 15, 25, 0.92);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1.5px solid rgba(56, 189, 248, 0.45);
+  border-radius: 18px;
+  padding: 12px 18px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.75), 0 0 24px rgba(56, 189, 248, 0.25);
+  z-index: 50;
+  pointer-events: auto;
+  animation: slideUpFade 0.22s ease-out;
+  max-width: 90vw;
+}
+
+@keyframes slideUpFade {
+  from { opacity: 0; transform: translate(-50%, 15px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+.target-card-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.target-card-flag {
+  font-size: 26px;
+}
+
+.target-card-texts {
+  display: flex;
+  flex-direction: column;
+}
+
+.target-card-title {
+  color: #fff;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
+
+.target-card-coords {
+  color: #38bdf8;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.target-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.target-descend-btn {
+  background: linear-gradient(135deg, #059669, #10b981);
+  border: 1.5px solid #34d399;
+  border-radius: 9999px;
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 800;
+  padding: 8px 16px;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(5, 150, 105, 0.5), 0 0 14px rgba(52, 211, 153, 0.4);
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.target-descend-btn:hover {
+  filter: brightness(1.2);
+  transform: scale(1.03);
+}
+
+.target-close-btn {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.target-close-btn:hover {
+  background: rgba(239, 68, 68, 0.3);
+  color: #fff;
+}
+
+/* Space Telemetry Capsule at Bottom Left */
+.orbital-telemetry-pill {
+  position: absolute;
+  bottom: 24px;
+  left: 16px;
+  background: rgba(11, 15, 25, 0.85);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  border-radius: 9999px;
+  padding: 7px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #94a3b8;
+  font-size: 11.5px;
+  font-weight: 600;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  z-index: 45;
+  pointer-events: auto;
+}
+
+.orbital-telemetry-pill b {
+  color: #38bdf8;
+}
+
+/* Earth Globe Navigation Controls at Bottom Right */
+.earth-nav-controls {
+  position: absolute;
+  bottom: 24px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 45;
+  pointer-events: auto;
+}
+
+.earth-nav-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: rgba(15, 23, 42, 0.88);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+  transition: all 0.12s ease;
+}
+
+.earth-nav-btn:hover {
+  background: #0284c7;
+  transform: scale(1.08);
+}
+
+/* Floating Earth Discovery Drawer */
+.earth-explorer-drawer {
+  position: absolute;
+  top: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 90%;
+  max-width: 780px;
+  max-height: 60vh;
+  background: rgba(11, 15, 25, 0.94);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 18px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.85);
+  z-index: 60;
+  pointer-events: auto;
+  animation: slideDownFade 0.2s ease-out;
+}
+
+@keyframes slideDownFade {
+  from { opacity: 0; transform: translate(-50%, -15px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+.drawer-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.drawer-cat-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.drawer-cat-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 9999px;
+  color: #94a3b8;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 5px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.12s ease;
+}
+
+.drawer-cat-btn:hover, .drawer-cat-btn.active {
+  background: #0284c7;
+  border-color: #38bdf8;
+  color: #fff;
+}
+
+.drawer-dest-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+  overflow-y: auto;
+  max-height: 48vh;
+  padding-right: 4px;
+}
+
+.drawer-dest-card {
+  background: rgba(30, 41, 59, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.drawer-dest-card:hover {
+  background: rgba(56, 189, 248, 0.18);
+  border-color: #38bdf8;
+  transform: translateY(-2px);
+}
+
+.drawer-card-flag {
+  font-size: 22px;
+}
+
+.drawer-card-texts {
+  flex: 1;
+  overflow: hidden;
+}
+
+.drawer-card-city {
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.drawer-card-landmark {
+  color: #38bdf8;
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ========================================================
