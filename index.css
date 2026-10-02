@@ -1815,3 +1815,73 @@ html, body, #root {
 }
 
 .hero3d-canvas { z-index: 9; }
+
+/* ========================================================
+   INTRO SCREEN: live 3D map + hero, big blue Play pill
+   ======================================================== */
+.intro-screen {
+  position: absolute; inset: 0; z-index: 80;
+  display: flex; flex-direction: column; justify-content: space-between; align-items: center;
+  padding: max(8vh, env(safe-area-inset-top)) 24px max(9vh, env(safe-area-inset-bottom));
+  text-align: center;
+  background:
+    linear-gradient(180deg, rgba(6, 12, 28, 0.62) 0%, rgba(6, 12, 28, 0) 34%, rgba(6, 12, 28, 0) 62%, rgba(6, 12, 28, 0.7) 100%);
+  transition: opacity 0.6s var(--ease-out), transform 0.6s var(--ease-out);
+}
+.intro-screen.leaving { opacity: 0; transform: scale(1.04); pointer-events: none; }
+.intro-top, .intro-bottom { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.intro-kicker {
+  font-size: 12px; font-weight: 600; letter-spacing: 0.32em; color: rgba(255,255,255,0.78);
+  animation: introRise 0.9s var(--ease-out) both;
+}
+.intro-title {
+  font-size: clamp(2.6rem, 11vw, 5.4rem); line-height: 1; letter-spacing: -0.035em; font-weight: 800; color: #fff;
+  text-shadow: 0 4px 30px rgba(0, 0, 0, 0.55);
+  animation: introRise 0.9s 0.08s var(--ease-out) both;
+}
+.intro-title span { background: linear-gradient(135deg, #7cc0ff, #3d8bff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.intro-sub {
+  font-size: clamp(0.95rem, 3.4vw, 1.15rem); color: rgba(255,255,255,0.86); max-width: 30ch; line-height: 1.4;
+  text-shadow: 0 2px 14px rgba(0,0,0,0.6); animation: introRise 0.9s 0.16s var(--ease-out) both;
+}
+.intro-bottom { animation: introRise 0.9s 0.28s var(--ease-out) both; }
+.play-btn {
+  position: relative; display: inline-flex; align-items: center; gap: 12px;
+  padding: 17px 46px 17px 36px; border: none; border-radius: 999px; cursor: pointer;
+  color: #fff; font: inherit; font-size: 1.15rem; font-weight: 650; letter-spacing: 0.01em;
+  background: linear-gradient(180deg, #3d9bff 0%, #0a6cf0 100%);
+  box-shadow: 0 10px 30px rgba(10, 108, 240, 0.55), 0 2px 0 rgba(255,255,255,0.28) inset, 0 -2px 6px rgba(0, 40, 120, 0.35) inset;
+  transition: transform 0.2s var(--ease-out), box-shadow 0.2s, filter 0.2s;
+  -webkit-tap-highlight-color: transparent;
+}
+.play-btn::before { /* soft halo */
+  content: ''; position: absolute; inset: -8px; border-radius: inherit; z-index: -1;
+  background: radial-gradient(closest-side, rgba(61,155,255,0.5), transparent 72%); animation: playPulse 2.4s ease-in-out infinite;
+}
+.play-btn:hover { transform: translateY(-2px) scale(1.03); filter: brightness(1.08); box-shadow: 0 14px 38px rgba(10,108,240,0.65), 0 2px 0 rgba(255,255,255,0.32) inset; }
+.play-btn:active { transform: scale(0.96); transition-duration: 80ms; }
+.play-icon {
+  width: 0; height: 0; border-style: solid; border-width: 9px 0 9px 15px; border-color: transparent transparent transparent #fff;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.3)); margin-left: 2px;
+}
+.intro-hint { font-size: 12px; color: rgba(255,255,255,0.7); letter-spacing: 0.04em; text-shadow: 0 1px 8px rgba(0,0,0,0.6); }
+@keyframes introRise { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+@keyframes playPulse { 0%, 100% { opacity: 0.55; transform: scale(0.96); } 50% { opacity: 1; transform: scale(1.08); } }
+
+/* Game HUD hides while the intro plays, then fades back in */
+.game-container.intro-active .game-top-bar,
+.game-container.intro-active .game-bottom-hud,
+.game-container.intro-active .game-toast-container,
+.game-container.intro-active .proximity-warning-banner,
+.game-container.intro-active .theme-popover { opacity: 0; pointer-events: none; }
+.game-top-bar, .game-bottom-hud { transition: opacity 0.6s var(--ease-out); }
+
+@media (prefers-reduced-motion: reduce) {
+  .intro-kicker, .intro-title, .intro-sub, .intro-bottom { animation: none; }
+  .play-btn::before { animation: none; }
+}
+@media (max-height: 480px) and (orientation: landscape) {
+  .intro-screen { padding-top: 14px; padding-bottom: 14px; }
+  .intro-title { font-size: 2.4rem; }
+  .intro-sub, .intro-hint { display: none; }
+}

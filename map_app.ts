@@ -41,6 +41,9 @@ import {Hero3D} from './src/hero3d';
 
 // 3D hero (src/hero3d.ts + public/models/hero.glb) is parked; flip to true to bring it back.
 const USE_3D_HERO = false;
+
+// Intro screen with the Play button; set to true to bring it back.
+const SHOW_INTRO = false;
 import {
   AerialRing,
   AvatarMode,
@@ -133,6 +136,9 @@ export class MapApp extends LitElement {
   @state() speedPreset: SpeedPreset = 'bike';
   @state() isMuted: boolean = false;
   @state() showThemePicker: boolean = false;
+  @state() showIntro: boolean = SHOW_INTRO;
+  @state() introLeaving: boolean = false;
+  private introSavedRange: number = 220;
   @state() uiTheme: string = (() => {
     try { return localStorage.getItem('ee3d-theme') || 'midnight'; } catch { return 'midnight'; }
   })();
@@ -242,6 +248,14 @@ export class MapApp extends LitElement {
         return;
       }
 
+      if (this.showIntro) {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          this.startGameFromIntro();
+        }
+        return;
+      }
+
       const key = e.key.toLowerCase();
       this.keysPressed[key] = true;
 
@@ -282,7 +296,7 @@ export class MapApp extends LitElement {
 
     // Mouse Wheel Zoom
     this.boundWheel = (e: WheelEvent) => {
-      if (this.showWorldMapModal || this.showPassportModal) {
+      if (this.showIntro || this.showWorldMapModal || this.showPassportModal) {
         return;
       }
       this.zoomCamera(e.deltaY * 0.08);
@@ -621,6 +635,13 @@ export class MapApp extends LitElement {
       return;
     }
 
+    // Google calls this when the key is rejected (no billing, wrong referrer, API not enabled...)
+    (window as any).gm_authFailure = () => {
+      this.mapError =
+        'Google rechazó la API Key de Maps. Revisa en Google Cloud: facturación activada, "Maps JavaScript API" y "Map Tiles API" habilitadas, y que la key permita http://localhost:3000. Ponla en .env.local como VITE_GOOGLE_MAPS_API_KEY.';
+      this.requestUpdate();
+    };
+
     const loader = new Loader({
       apiKey: USER_PROVIDED_GOOGLE_MAPS_API_KEY,
       version: 'beta',
@@ -718,6 +739,16 @@ export class MapApp extends LitElement {
    */
   private updatePhysics(deltaTime: number) {
     if (this.isOrbitalView) return; // Freeze ground movement while in space globe view
+
+    if (this.showIntro) {
+      // Cinematic idle orbit around the hero while the intro is on screen
+      this.playerHeading = (this.playerHeading + 6 * deltaTime) % 360;
+      this.playerTilt = 66;
+      this.playerRange = 130;
+      this.currentSpeedKmh = 0;
+      this.updateMapCamera();
+      return;
+    }
 
     // 1. Steering & Turn Angle (from Joystick or Keys)
     let turnInput = 0;
@@ -1177,6 +1208,19 @@ export class MapApp extends LitElement {
     try { localStorage.setItem('ee3d-theme', id); } catch {}
   }
 
+  public startGameFromIntro() {
+    if (!this.showIntro || this.introLeaving) return;
+    this.introLeaving = true;
+    sound.playTeleportWhoosh(); // first user gesture: also unlocks audio
+    this.playerRange = this.introSavedRange;
+    this.updateMapCamera();
+    window.setTimeout(() => {
+      this.showIntro = false;
+      this.introLeaving = false;
+      this.showToast('🦸 ¡A volar!', 'Joystick o WASD para moverte • Espacio para subir');
+    }, 650);
+  }
+
   public toggleAudio() {
     this.isMuted = sound.toggleMute();
     this.showToast(this.isMuted ? '🔇 Audio Silenciado' : '🔊 Audio Activado', '');
@@ -1248,7 +1292,7 @@ export class MapApp extends LitElement {
         : WORLD_DESTINATIONS.filter((d) => d.region === this.selectedRegion);
 
     return html`
-      <div class="game-container ${this.isScreenShaking ? 'shake-impact' : ''}">
+      <div class="game-container ${this.isScreenShaking ? 'shake-impact' : ''} ${this.showIntro ? 'intro-active' : ''} ${this.introLeaving ? 'intro-leaving' : ''}">
         <!-- Google Photorealistic 3D Map (Crisp Hybrid Mode with 3D Altitude) -->
         <gmp-map-3d
           id="mapContainer"
@@ -1699,6 +1743,26 @@ export class MapApp extends LitElement {
                       `,
                     )}
                   </div>
+                </div>
+              </div>
+            `
+          : ''}
+
+        <!-- INTRO -->
+        ${this.showIntro
+          ? html`
+              <div class="intro-screen ${this.introLeaving ? 'leaving' : ''}">
+                <div class="intro-top">
+                  <div class="intro-kicker">EARTH EXPLORER 3D</div>
+                  <h1 class="intro-title">Super<span>Earth</span></h1>
+                  <p class="intro-sub">Vuela sobre el mundo real, ciudad por ciudad.</p>
+                </div>
+                <div class="intro-bottom">
+                  <button class="play-btn" @click=${() => this.startGameFromIntro()} aria-label="Jugar">
+                    <span class="play-icon" aria-hidden="true"></span>
+                    <span class="play-label">Jugar</span>
+                  </button>
+                  <div class="intro-hint">Enter o toca para empezar</div>
                 </div>
               </div>
             `
