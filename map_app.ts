@@ -51,6 +51,14 @@ import {
   getWeatherForCity,
 } from './src/weather_system';
 import {
+  DayNightSystem,
+  DayNightState,
+} from './src/day_night_system';
+import {
+  MissionSystem,
+  CityMission,
+} from './src/mission_system';
+import {
   AerialRing,
   AvatarMode,
   BuildingObstacle,
@@ -181,6 +189,23 @@ export class MapApp extends LitElement {
   @state() orbitalCategory: string = 'todos';
   @state() showEarthExplorerDrawer: boolean = false;
 
+  // --- Day-Night & Time Shift System ---
+  public dayNightSystem: DayNightSystem = new DayNightSystem();
+  @state() dayNightState?: DayNightState;
+  @state() showTimeShiftModal: boolean = false;
+
+  // --- Milestone Mission System ---
+  public missionSystem: MissionSystem = new MissionSystem();
+  @state() showMissionsModal: boolean = false;
+
+  // --- Right-Side Slide-out Drawer for Centralized HUD ---
+  @state() showSideDrawer: boolean = false;
+  @state() activeDrawerTab: string = 'todos';
+
+  // --- Vuela a donde quieras (Search Bar below Recorrido Metros) ---
+  @state() vuelaSearchQuery: string = '';
+  @state() showVuelaDropdown: boolean = false;
+
   // --- Photos & Collectibles ---
   @state() passportStamps: PassportStamp[] = [
     {
@@ -236,6 +261,20 @@ export class MapApp extends LitElement {
   ): void {
     this.initControls();
     this.loadMap();
+
+    // Initialize Day-Night cycle and Milestone Missions
+    this.dayNightState = this.dayNightSystem.update(this.playerLat, this.playerLng);
+    this.missionSystem.initializeForCity(this.currentCity, this.playerLat, this.playerLng, this.currentCityObstacles);
+    this.missionSystem.onMissionCompleted = (mission: CityMission) => {
+      sound.playCosmicChime();
+      this.currentScore += mission.xpReward;
+      this.showToast('🏆 ¡Hito de Misión Completado!', `${mission.title} (+${mission.xpReward} XP)`);
+      this.requestUpdate();
+    };
+    this.missionSystem.onMissionProgress = (mission: CityMission) => {
+      sound.playCollectChime();
+      this.requestUpdate();
+    };
   }
 
   private boundKeyDown?: (e: KeyboardEvent) => void;
@@ -311,9 +350,26 @@ export class MapApp extends LitElement {
       } else if (key === 'v') {
         this.toggleCameraMode();
       } else if (key === 'm') {
+        this.showSideDrawer = !this.showSideDrawer;
+      } else if (key === 'u') {
         this.toggleAudio();
       } else if (key === 'p') {
-        this.showPassportModal = !this.showPassportModal;
+        this.showSideDrawer = true;
+        this.activeDrawerTab = 'pasaporte';
+      } else if (key === 'k') {
+        this.showSideDrawer = true;
+        this.activeDrawerTab = 'misiones';
+      } else if (key === 'j') {
+        this.showSideDrawer = true;
+        this.activeDrawerTab = 'tiempo';
+      } else if (e.key === 'Escape') {
+        this.showSideDrawer = false;
+        this.showTimeShiftModal = false;
+        this.showMissionsModal = false;
+        this.showVuelaDropdown = false;
+        this.showWorldMapModal = false;
+        this.showPassportModal = false;
+        this.showThemePicker = false;
       } else if (key === 'g') {
         if (this.isOrbitalView) {
           this.flyFromOrbitToCity(this.playerLat, this.playerLng, this.currentCity, this.currentCountry, this.currentFlag, 195);
@@ -821,6 +877,11 @@ export class MapApp extends LitElement {
 
     this.spawnLocalCollectibles();
     this.spawnCityRingsAndObstacles(lat, lng);
+
+    // Update Day-Night Solar simulation and Milestone Missions for new city
+    this.dayNightState = this.dayNightSystem.update(lat, lng);
+    this.missionSystem.initializeForCity(city, lat, lng, this.currentCityObstacles);
+
     const weatherMeta = WEATHER_METADATA[cityWeather];
     this.showToast(`🚀 ¡Descenso aéreo a ${city}!`, `${flag} ${city} • ${weatherMeta.icon} ${weatherMeta.name} • Cielo a 320m`);
   }
@@ -1123,6 +1184,18 @@ export class MapApp extends LitElement {
     } else {
       this.updateMapCamera();
     }
+
+    // Update Day-Night Solar simulation & 3D building lighting
+    this.dayNightState = this.dayNightSystem.update(this.playerLat, this.playerLng);
+
+    // Update Milestone Missions (street hunt, altitude peak, combo)
+    this.missionSystem.update(
+      this.playerLat,
+      this.playerLng,
+      this.playerAltitude,
+      deltaTime,
+      this.ringCombo,
+    );
   }
 
   /**
@@ -1517,7 +1590,17 @@ export class MapApp extends LitElement {
 
     this.capturedPhotos = [newPhoto, ...this.capturedPhotos];
     this.currentScore += 50;
-    this.showToast('📸 ¡Foto 360° Capturada!', `${newPhoto.locationName} (${compass} ${newPhoto.heading}°) • +50 XP`);
+
+    // Check Milestone Mission: Fotografiar 3 edificios icónicos
+    const photoMissionResult = this.missionSystem.onPhotoSnapped(this.playerLat, this.playerLng);
+    if (photoMissionResult.newlyPhotographedName) {
+      this.showToast(
+        '🏛️ ¡Edificio Icónico Fotografiado!',
+        `${photoMissionResult.newlyPhotographedName} (${photoMissionResult.completedCount}/3 Hitos)`,
+      );
+    } else {
+      this.showToast('📸 ¡Foto 360° Capturada!', `${newPhoto.locationName} (${compass} ${newPhoto.heading}°) • +50 XP`);
+    }
   }
 
   public static readonly THEMES = [
@@ -1607,6 +1690,114 @@ export class MapApp extends LitElement {
     anchor?.scrollIntoView({behavior: 'smooth'});
   }
 
+  public getFilteredVuelaSuggestions(): LandmarkLocation[] {
+    const q = (this.vuelaSearchQuery || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    if (!q) return [];
+    return WORLD_DESTINATIONS.filter((d) => {
+      const city = d.city.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const name = d.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const country = d.country.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      return city.includes(q) || name.includes(q) || country.includes(q);
+    }).slice(0, 6);
+  }
+
+  public selectVuelaDestination(dest: LandmarkLocation) {
+    this.vuelaSearchQuery = '';
+    this.showVuelaDropdown = false;
+    this.flyFromOrbitToCity(
+      dest.lat,
+      dest.lng,
+      dest.city,
+      dest.country,
+      dest.flag,
+      dest.heading,
+    );
+  }
+
+  public async executeVuelaSearch() {
+    const query = this.vuelaSearchQuery.trim();
+    if (!query) return;
+
+    this.showVuelaDropdown = false;
+    this.showToast('🔍 Localizando destino...', `Buscando "${query}" en el mapa mundial...`);
+
+    // 1. Check curated list
+    const qNorm = query.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const matched = WORLD_DESTINATIONS.find((d) => {
+      const city = d.city.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const name = d.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const country = d.country.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      return city.includes(qNorm) || name.includes(qNorm) || country.includes(qNorm);
+    });
+
+    if (matched) {
+      this.selectVuelaDestination(matched);
+      return;
+    }
+
+    // 2. Fallback to OpenStreetMap Nominatim for any place on Earth
+    try {
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1`,
+        { headers: { 'Accept-Language': 'es,en' } },
+      );
+      if (response.ok) {
+        const results = await response.json();
+        if (results && results.length > 0) {
+          const item = results[0];
+          const lat = parseFloat(item.lat);
+          const lon = parseFloat(item.lon);
+          const parts = (item.display_name || query).split(',');
+          const cityName = parts[0]?.trim() || query;
+          const countryName = parts[parts.length - 1]?.trim() || 'Mundo';
+
+          this.flyFromOrbitToCity(
+            lat,
+            lon,
+            cityName,
+            countryName,
+            '🌍',
+            195,
+          );
+          this.vuelaSearchQuery = '';
+          return;
+        }
+      }
+      this.showToast('⚠️ Destino no encontrado', `No se pudo geolocalizar "${query}". Intenta con otra ciudad o maravilla.`);
+    } catch (e) {
+      this.showToast('⚠️ Error de conexión', 'No se pudo contactar el geocodificador satelital.');
+    }
+  }
+
+  public toggleAutoLocalTime() {
+    const isAuto = !this.dayNightSystem.getIsAuto();
+    this.dayNightSystem.setAutoLocalTime(isAuto);
+    this.dayNightState = this.dayNightSystem.update(this.playerLat, this.playerLng);
+    this.showToast(
+      isAuto ? '⏰ Hora Local Automática Activada' : '⏸️ Time Shift Manual Activado',
+      isAuto
+        ? `Hora real de ${this.currentCity}: ${this.dayNightState.timeString}`
+        : 'Usa el deslizador o presets para ajustar la iluminación',
+    );
+    this.requestUpdate();
+  }
+
+  public setTimePreset(hour: number) {
+    this.dayNightSystem.setManualHour(hour);
+    this.dayNightState = this.dayNightSystem.update(this.playerLat, this.playerLng);
+    this.showToast(
+      `🌅 Time Shift: ${this.dayNightState.periodLabel}`,
+      `Hora solar ajustada a las ${this.dayNightState.timeString}`,
+    );
+    this.requestUpdate();
+  }
+
+  public handleManualTimeSlider(hour: number) {
+    this.dayNightSystem.setManualHour(hour);
+    this.dayNightState = this.dayNightSystem.update(this.playerLat, this.playerLng);
+    this.requestUpdate();
+  }
+
   private getFilteredOrbitalSuggestions(): LandmarkLocation[] {
     const q = (this.orbitalSearchQuery || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     if (!q) return [];
@@ -1646,6 +1837,14 @@ export class MapApp extends LitElement {
           role="application">
         </gmp-map-3d>
 
+        <!-- Dynamic Day-Night Solar Lighting & 3D Building Illumination Overlay -->
+        <div
+          class="day-night-lighting-overlay ${this.dayNightState?.period || 'day'}"
+          style="
+            background: ${this.dayNightState?.overlayCss || 'transparent'};
+            mix-blend-mode: ${this.dayNightState?.overlayBlendMode || 'normal'};
+          "></div>
+
         <!-- Dynamic Weather & Atmospheric Particle Canvas -->
         <canvas id="weatherCanvas" class="weather-overlay-canvas"></canvas>
 
@@ -1667,581 +1866,841 @@ export class MapApp extends LitElement {
           : ''}
 
         <!-- ========================================================
-             GOOGLE EARTH 3D / SPACE HUD (Órbita Terrestre)
+             TOP HUD BAR (Minimalista & Limpio en Ciudad y Espacio)
              ======================================================== -->
-        ${this.isOrbitalView ? html`
-          <!-- Google Earth Top Exploration Bar -->
-          <header class="earth-hud-top-bar">
-            <div class="earth-branding-pill">
-              <span class="earth-pulse-dot"></span>
-              <span>🌍 GOOGLE EARTH 3D</span>
-            </div>
+        <header class="game-top-bar">
+          <!-- Left: Minimalist Status Pill -->
+          <div class="top-left-status-group">
+            ${this.isOrbitalView
+              ? html`
+                  <div class="compact-status-pill">
+                    <span class="flag-icon">🌍</span>
+                    <div class="status-info">
+                      <span class="street-name">GOOGLE EARTH 3D</span>
+                      <span class="speed-and-coords">🛰️ <b>12,500 km</b> • Órbita Espacial</span>
+                    </div>
+                  </div>
+                `
+              : html`
+                  <div class="compact-status-pill">
+                    <span class="flag-icon">${this.currentFlag}</span>
+                    <div class="status-info">
+                      <span class="street-name">${this.currentCity}</span>
+                      <span class="speed-and-coords">
+                        <b>${Math.round(this.currentSpeedKmh)} KM/H</b> • ⛰️ <b>${Math.round(this.playerAltitude)}M</b> • 🗺️ <b>${formattedDistance}</b>
+                      </span>
+                    </div>
+                  </div>
 
-            <!-- Universal Planetary Search Bar -->
-            <div class="earth-search-container">
-              <input
-                type="text"
-                class="earth-search-input"
-                placeholder="🔍 Busca cualquier ciudad, maravilla o rincón del planeta..."
-                .value=${this.orbitalSearchQuery}
-                @input=${(e: InputEvent) => {
-                  this.orbitalSearchQuery = (e.target as HTMLInputElement).value;
-                }}
-                @keydown=${(e: KeyboardEvent) => {
-                  if (e.key === 'Enter') {
-                    this.searchAndTeleport(this.orbitalSearchQuery);
-                  }
-                }} />
-              <button
-                class="earth-search-btn"
-                @click=${() => this.searchAndTeleport(this.orbitalSearchQuery)}>
-                Volar 🪂
-              </button>
-
-              <!-- Autocomplete suggestions dropdown -->
-              ${this.orbitalSearchQuery.trim().length > 0 ? html`
-                <div class="earth-suggestions-dropdown">
-                  ${this.getFilteredOrbitalSuggestions().map((s) => html`
-                    <div
-                      class="earth-suggestion-item"
-                      @click=${() => this.descendToCoordinates(s.lat, s.lng, s.city, s.country, s.flag)}>
-                      <span class="sugg-flag">${s.flag}</span>
-                      <div class="sugg-info">
-                        <span class="sugg-city">${s.city}, ${s.country}</span>
-                        <span class="sugg-desc">${s.name} • ${s.description}</span>
+                  <!-- Subtle compact chip for timed hunt ONLY while timer is actively running -->
+                  ${(() => {
+                    const timedMission = this.missionSystem.currentMissions.find(
+                      (m) => m.type === 'timed_street_hunt' && m.timerActive && !m.completed,
+                    );
+                    if (!timedMission) return '';
+                    return html`
+                      <div
+                        class="compact-hunt-radar-pill"
+                        @click=${() => {
+                          this.showSideDrawer = true;
+                          this.activeDrawerTab = 'misiones';
+                        }}
+                        title="Ver detalles de la misión en el panel lateral">
+                        <span class="radar-ping-dot"></span>
+                        <span>⏱️ ${Math.ceil(timedMission.timeRemainingSeconds || 0)}s</span>
+                        <span class="radar-cue-text">• 📡 ${timedMission.radarDistanceMeters}m al ${timedMission.radarDirection}</span>
                       </div>
-                    </div>
-                  `)}
-                  <div
-                    class="earth-suggestion-item"
-                    @click=${() => this.searchAndTeleport(this.orbitalSearchQuery)}>
-                    <span class="sugg-flag">🌐</span>
-                    <div class="sugg-info">
-                      <span class="sugg-city">Buscar en todo el planeta: "${this.orbitalSearchQuery}"</span>
-                      <span class="sugg-desc">Geocodificador satelital global de acceso libre</span>
-                    </div>
-                  </div>
-                </div>
-              ` : ''}
-            </div>
-
-            <!-- Action buttons in space -->
-            <div class="earth-actions-cluster">
-              <button
-                class="earth-action-btn random"
-                @click=${() => this.teleportToRandomDestination()}
-                title="Visitar un lugar aleatorio del mundo">
-                🎲 Aleatorio
-              </button>
-              <button
-                class="earth-action-btn"
-                @click=${() => (this.showEarthExplorerDrawer = !this.showEarthExplorerDrawer)}
-                title="Explorar ciudades y maravillas">
-                🌟 Explorar
-              </button>
-              <button
-                class="earth-action-btn descend"
-                @click=${() => this.descendToCoordinates(this.playerLat, this.playerLng, this.currentCity, this.currentCountry, this.currentFlag)}
-                title="Descender en vuelo hacia la Tierra">
-                🪂 Descender
-              </button>
-            </div>
-          </header>
-
-          <!-- Floating Target Card when user clicks ANYWHERE on Earth -->
-          ${this.selectedOrbitalTarget ? html`
-            <div class="orbital-target-card">
-              <div class="target-card-info">
-                <span class="target-card-flag">${this.selectedOrbitalTarget.flag || '📍'}</span>
-                <div class="target-card-texts">
-                  <div class="target-card-title">${this.selectedOrbitalTarget.name}</div>
-                  <div class="target-card-coords">Coordenadas: ${this.selectedOrbitalTarget.lat.toFixed(4)}°, ${this.selectedOrbitalTarget.lng.toFixed(4)}°</div>
-                </div>
-              </div>
-              <div class="target-card-actions">
-                <button
-                  class="target-descend-btn"
-                  @click=${() => this.descendToCoordinates(this.selectedOrbitalTarget!.lat, this.selectedOrbitalTarget!.lng, this.selectedOrbitalTarget!.name, this.selectedOrbitalTarget!.country, this.selectedOrbitalTarget!.flag)}>
-                  ⚡ Descender en Vuelo Aquí 🪂
-                </button>
-                <button class="target-close-btn" @click=${() => (this.selectedOrbitalTarget = null)}>✕</button>
-              </div>
-            </div>
-          ` : ''}
-
-          <!-- Floating Earth Discovery Drawer -->
-          ${this.showEarthExplorerDrawer ? html`
-            <div class="earth-explorer-drawer">
-              <div class="drawer-top-row">
-                <div class="drawer-cat-tabs">
-                  ${['todos', 'metropolis', 'wonder', 'nature', 'island'].map((cat) => html`
-                    <button
-                      class="drawer-cat-btn ${this.orbitalCategory === cat ? 'active' : ''}"
-                      @click=${() => (this.orbitalCategory = cat)}>
-                      ${cat === 'todos' ? '🌍 Todos' : cat === 'metropolis' ? '🏙️ Metrópolis' : cat === 'wonder' ? '⛰️ Maravillas' : cat === 'nature' ? '🏔️ Naturaleza' : '🏝️ Islas'}
-                    </button>
-                  `)}
-                </div>
-                <button class="target-close-btn" @click=${() => (this.showEarthExplorerDrawer = false)}>✕</button>
-              </div>
-              <div class="drawer-dest-grid">
-                ${(this.orbitalCategory === 'todos'
-                  ? WORLD_DESTINATIONS
-                  : WORLD_DESTINATIONS.filter((d) => (d.category || 'metropolis') === this.orbitalCategory)
-                ).map((dest) => html`
-                  <div
-                    class="drawer-dest-card"
-                    @click=${() => this.descendToCoordinates(dest.lat, dest.lng, dest.city, dest.country, dest.flag)}>
-                    <span class="drawer-card-flag">${dest.flag}</span>
-                    <div class="drawer-card-texts">
-                      <div class="drawer-card-city">${dest.city}</div>
-                      <div class="drawer-card-landmark">${dest.name}</div>
-                    </div>
-                  </div>
-                `)}
-              </div>
-            </div>
-          ` : ''}
-
-          <!-- Bottom Left Space Telemetry Pill -->
-          <div class="orbital-telemetry-pill">
-            <span>🛰️ Órbita Terrestre: <b>12,500 km</b></span>
-            <span>🌍 Haz clic en cualquier lugar del planeta para descender</span>
+                    `;
+                  })()}
+                `}
           </div>
 
-          <!-- Bottom Right Earth Navigation Controls -->
-          <div class="earth-nav-controls">
-            <button class="earth-nav-btn" @click=${() => this.zoomGlobe(0.6)} title="Acercar Globo (＋)">＋</button>
-            <button class="earth-nav-btn" @click=${() => this.zoomGlobe(1.5)} title="Alejar Globo (－)">－</button>
-            <button class="earth-nav-btn" @click=${() => this.spinGlobe('east')} title="Girar Globo Este (🔄)">🔄</button>
-            <button class="earth-nav-btn" @click=${() => this.resetNorth()} title="Alinear Norte (🧭)">🧭</button>
-          </div>
-        ` : html`
-          <!-- ========================================================
-               CITY FLIGHT HUD (Vuelo 3D sobre Ciudades)
-               ======================================================== -->
-          <header class="game-top-bar">
-            <!-- City, Speed, Altitud & Recorrido Pill -->
-            <div class="compact-status-pill">
-              <span class="flag-icon">${this.currentFlag}</span>
-              <div class="status-info">
-                <span class="street-name">${this.currentCity}</span>
-                <span class="speed-and-coords">
-                  <b>${Math.round(this.currentSpeedKmh)} KM/H</b> • ⛰️ <b>${Math.round(this.playerAltitude)}M</b> • 🗺️ <b>${formattedDistance}</b>
-                </span>
-              </div>
-            </div>
-
-            <!-- Aerial Ring Circuit & Combo Badges -->
-            ${this.aerialRings.length > 0
-              ? html`
-                  <div class="circuit-pill" title="Anillos Aéreos Superados en la Ciudad">
-                    ⭕ <b>${this.ringsPassedCount}/${this.aerialRings.length}</b>
-                  </div>
-                `
-              : ''}
-
-            ${this.ringCombo > 1
-              ? html`
-                  <div class="combo-pill" title="Combo de Anillos Consecutivos">
-                    🔥 COMBO x${this.ringCombo}
-                  </div>
-                `
-              : ''}
-
-            <!-- Collision Mode Toggle -->
+          <!-- Right: Centralized Drawer Menu Button -->
+          <div class="top-right-group">
             <button
-              class="collision-mode-toggle ${this.collisionsEnabled ? 'active' : ''}"
-              @click=${() => this.toggleCollisions()}
-              title="Alternar Colisiones con Edificios y Suelo (T)">
-              ${this.collisionsEnabled ? '🛡️ Colisión ON' : '🕊️ Libre'}
+              class="side-drawer-toggle-btn ${this.showSideDrawer ? 'active' : ''}"
+              @click=${() => (this.showSideDrawer = !this.showSideDrawer)}
+              title="Abrir Menú de Exploración, Buscador, Misiones y Opciones (Tecla M)">
+              <span class="toggle-icon">${this.showSideDrawer ? '✕' : '☰'}</span>
+              <span class="toggle-text">Menú & Explorar</span>
+              ${this.missionSystem.getCompletedCount() < this.missionSystem.currentMissions.length
+                ? html`
+                    <span class="toggle-badge">
+                      ${this.missionSystem.getCompletedCount()}/${this.missionSystem.currentMissions.length}
+                    </span>
+                  `
+                : ''}
             </button>
+          </div>
+        </header>
 
-            <!-- Dynamic Weather Condition Selector Capsule -->
-            <div class="weather-selector-pill" title="Condición Climática Dinámica">
-              <button
-                class="weather-option-btn ${this.currentWeather === 'rain' ? 'active' : ''}"
-                @click=${() => this.setWeather('rain')}
-                title="🌧️ Lluvia">
-                🌧️
-              </button>
-              <button
-                class="weather-option-btn ${this.currentWeather === 'snow' ? 'active' : ''}"
-                @click=${() => this.setWeather('snow')}
-                title="❄️ Nieve">
-                ❄️
-              </button>
-              <button
-                class="weather-option-btn ${this.currentWeather === 'fog' ? 'active' : ''}"
-                @click=${() => this.setWeather('fog')}
-                title="🌫️ Niebla">
-                🌫️
-              </button>
-              <button
-                class="weather-option-btn ${this.currentWeather === 'clear' ? 'active' : ''}"
-                @click=${() => this.setWeather('clear')}
-                title="☀️ Despejado">
-                ☀️
-              </button>
-            </div>
+        <!-- Backdrop for Side Drawer -->
+        <div
+          class="side-drawer-backdrop ${this.showSideDrawer ? 'open' : ''}"
+          @click=${() => (this.showSideDrawer = false)}>
+        </div>
 
-            <!-- Top Action Buttons -->
-            <div class="top-actions">
-              <!-- Space Launch Button (Hagamos el juego infinito... botón de espacio y sube solo al espacio) -->
-              <button
-                class="top-icon-btn space-launch-btn"
-                @click=${() => this.launchToSpace()}
-                title="Subir al Espacio Exterior y ver toda la Tierra en 3D (Espacio / G)">
-                🚀 Espacio
-              </button>
-
-              <!-- Passport Stamps -->
-              <button
-                class="top-icon-btn ${this.showPassportModal ? 'active' : ''}"
-                @click=${() => (this.showPassportModal = !this.showPassportModal)}
-                title="Pasaporte de Viajero (P)">
-                🛂 ${this.passportStamps.length}
-              </button>
-
-              <!-- Snap Postcard -->
-              <button
-                class="top-icon-btn"
-                @click=${() => this.snapStreetViewPhoto()}
-                title="Capturar Foto 360° (C)">
-                📸
-              </button>
-
-              <!-- UI Theme -->
-              <button
-                class="top-icon-btn theme-btn"
-                @click=${() => (this.showThemePicker = !this.showThemePicker)}
-                title="Color de la interfaz">
-                <span class="theme-dot"></span>
-              </button>
-
-              <!-- Audio Mute -->
-              <button
-                class="top-icon-btn"
-                @click=${() => this.toggleAudio()}
-                title="Sonido (M)">
-                ${this.isMuted ? '🔇' : '🔊'}
-              </button>
-            </div>
-          </header>
-
-          <!-- BOTTOM HUD: Virtual Steering Joystick, Zoom, and Drive Cluster -->
-          <footer class="game-bottom-hud">
-            <!-- LEFT: Virtual Steering Joystick -->
-            <div
-              class="virtual-joystick-base"
-              @pointerdown=${(e: PointerEvent) => this.handleJoystickPointerDown(e)}
-              @pointermove=${(e: PointerEvent) => this.handleJoystickPointerMove(e)}
-              @pointerup=${(e: PointerEvent) => this.handleJoystickPointerUp(e)}
-              @pointercancel=${(e: PointerEvent) => this.handleJoystickPointerUp(e)}
-              title="Joystick 360° (Arrastra para girar)">
-              <div class="joystick-ring"></div>
-              <div
-                class="joystick-knob"
-                style="transform: translate(${this.joystickKnobX}px, ${this.joystickKnobY}px);">
-                <span class="joystick-icon">🧭</span>
+        <!-- ========================================================
+             SLIDE-OUT RIGHT DRAWER (Centraliza toda la info y buscadores)
+             ======================================================== -->
+        <aside class="side-drawer ${this.showSideDrawer ? 'open' : ''}">
+          <!-- Drawer Header -->
+          <div class="side-drawer-header">
+            <div class="side-drawer-title-wrap">
+              <span class="side-drawer-city-flag">${this.currentFlag}</span>
+              <div class="side-drawer-title-texts">
+                <h2>${this.currentCity}</h2>
+                <p>${this.currentCountry} • 🗺️ ${formattedDistance} • ⛰️ ${Math.round(this.playerAltitude)}m</p>
               </div>
             </div>
+            <button class="close-btn" @click=${() => (this.showSideDrawer = false)} title="Cerrar Menú (Esc)">✕</button>
+          </div>
 
-            <!-- CENTER: Camera Mode & Zoom Dock -->
-            <div class="camera-zoom-bar">
-              <div class="segment-group">
-                <button
-                  class="seg-btn ${this.cameraMode === 'first_person' ? 'active' : ''}"
-                  @click=${() => this.setCameraMode('first_person')}
-                  title="Vista en 1ª Persona (Tecla V)">
-                  👁️ 1ª
-                </button>
-                <button
-                  class="seg-btn ${this.cameraMode === 'third_person' ? 'active' : ''}"
-                  @click=${() => this.setCameraMode('third_person')}
-                  title="Vista en 3ª Persona">
-                  🦸 3ª
-                </button>
-              </div>
+          <!-- Quick Navigation Tabs inside Drawer -->
+          <div class="side-drawer-nav-tabs">
+            <button
+              class="drawer-tab-btn ${this.activeDrawerTab === 'vuela' ? 'active' : ''}"
+              @click=${() => (this.activeDrawerTab = 'vuela')}>
+              ✈️ Vuela
+            </button>
+            <button
+              class="drawer-tab-btn ${this.activeDrawerTab === 'misiones' ? 'active' : ''}"
+              @click=${() => (this.activeDrawerTab = 'misiones')}>
+              🎯 Misiones (${this.missionSystem.getCompletedCount()}/${this.missionSystem.currentMissions.length})
+            </button>
+            <button
+              class="drawer-tab-btn ${this.activeDrawerTab === 'tiempo' ? 'active' : ''}"
+              @click=${() => (this.activeDrawerTab = 'tiempo')}>
+              ⏰ Día/Noche
+            </button>
+            <button
+              class="drawer-tab-btn ${this.activeDrawerTab === 'clima' ? 'active' : ''}"
+              @click=${() => (this.activeDrawerTab = 'clima')}>
+              🌦️ Clima
+            </button>
+            <button
+              class="drawer-tab-btn ${this.activeDrawerTab === 'pasaporte' ? 'active' : ''}"
+              @click=${() => (this.activeDrawerTab = 'pasaporte')}>
+              🛂 Pasaporte (${this.passportStamps.length})
+            </button>
+            <button
+              class="drawer-tab-btn ${this.activeDrawerTab === 'ajustes' ? 'active' : ''}"
+              @click=${() => (this.activeDrawerTab = 'ajustes')}>
+              ⚙️ Ajustes
+            </button>
+          </div>
 
-              <div class="segment-group">
-                <button
-                  class="seg-btn ${this.zoomPreset === 'close' ? 'active' : ''}"
-                  @click=${() => this.setZoomPreset('close')}
-                  title="Zoom Cerca">
-                  Cerca
-                </button>
-                <button
-                  class="seg-btn ${this.zoomPreset === 'medium' ? 'active' : ''}"
-                  @click=${() => this.setZoomPreset('medium')}
-                  title="Zoom Medio">
-                  Medio
-                </button>
-                <button
-                  class="seg-btn ${this.zoomPreset === 'sky' ? 'active' : ''}"
-                  @click=${() => this.setZoomPreset('sky')}
-                  title="Vista del Cielo">
-                  Cielo
-                </button>
-              </div>
-
-              <div class="zoom-stepper">
-                <button class="zoom-step-btn" @click=${() => this.zoomIn()} title="Acercar">＋</button>
-                <button class="zoom-step-btn" @click=${() => this.zoomOut()} title="Alejar">－</button>
-              </div>
-            </div>
-
-            <!-- RIGHT: Drive, Vertical Flight & Stunt Controls -->
-            <div class="drive-buttons-cluster">
-              <div class="vertical-controls">
-                <button
-                  class="btn-vert ${this.isClimbing ? 'pressing' : ''}"
-                  @pointerdown=${() => {
-                    this.isClimbing = true;
-                  }}
-                  @pointerup=${() => {
-                    this.isClimbing = false;
-                  }}
-                  @pointerleave=${() => {
-                    this.isClimbing = false;
-                  }}
-                  title="Ascender Altitud (E)">
-                  ▲ SUBIR
-                </button>
-                <button
-                  class="btn-vert btn-space-launch-vert"
-                  @click=${() => this.launchToSpace()}
-                  title="Subir al Espacio Exterior y ver toda la Tierra (Espacio / G)">
-                  🚀 ESPACIO
-                </button>
-                <button
-                  class="btn-vert ${this.isDiving ? 'pressing' : ''}"
-                  @pointerdown=${() => {
-                    this.isDiving = true;
-                  }}
-                  @pointerup=${() => {
-                    this.isDiving = false;
-                  }}
-                  @pointerleave=${() => {
-                    this.isDiving = false;
-                  }}
-                  title="Descender Altitud (Q)">
-                  ▼ BAJAR
-                </button>
-              </div>
-
-              <!-- Acrobacia: Giro de Barril 360° -->
-              <button
-                class="drive-btn btn-stunt"
-                @click=${() => this.triggerStuntRoll()}
-                title="Acrobacia: Giro de Barril (Tecla R)">
-                🌀 GIRO
-              </button>
-
-              <!-- Turbo Supersónico -->
-              <button
-                class="drive-btn btn-turbo ${this.isTurboActive ? 'pressing' : ''}"
-                @pointerdown=${() => this.triggerTurboBoost()}
-                title="Turbo Supersónico Mach (Tecla Shift)">
-                ⚡ TURBO
-              </button>
-
-              <!-- Frenar -->
-              <button
-                class="drive-btn btn-brake ${this.isBraking ? 'pressing' : ''}"
-                @pointerdown=${() => {
-                  this.isBraking = true;
-                }}
-                @pointerup=${() => {
-                  this.isBraking = false;
-                }}
-                @pointerleave=${() => {
-                  this.isBraking = false;
-                }}
-                title="Frenar (S / Flecha abajo)">
-                🛑 FRENO
-              </button>
-
-              <!-- Acelerar -->
-              <button
-                class="drive-btn btn-gas ${this.isAccelerating ? 'pressing' : ''}"
-                @pointerdown=${() => {
-                  this.isAccelerating = true;
-                }}
-                @pointerup=${() => {
-                  this.isAccelerating = false;
-                }}
-                @pointerleave=${() => {
-                  this.isAccelerating = false;
-                }}
-                title="Acelerar hacia adelante (W / Flecha arriba)">
-                ⚡ ACEL
-              </button>
-            </div>
-          </footer>
-        `}
-
-        <!-- WORLD MAP MODAL ("Elegir Cualquier Ciudad del Mundo y Volar") -->
-        ${this.showWorldMapModal
-          ? html`
-              <div
-                class="modal-backdrop"
-                @click=${() => (this.showWorldMapModal = false)}>
-                <div
-                  class="world-map-fly-modal"
-                  @click=${(e: Event) => e.stopPropagation()}>
-                  <!-- Header -->
-                  <div class="drawer-header">
-                    <div class="passport-title-wrap">
-                      <span class="passport-gold-emblem">🌍</span>
-                      <div>
-                        <h2>Volar desde el Mapa Mundo 3D</h2>
-                        <div class="passport-subtitle">
-                          Elige una ciudad o escribe cualquier lugar del planeta para descender en vuelo
-                        </div>
-                      </div>
+          <!-- Scrollable Drawer Content -->
+          <div class="side-drawer-scroll">
+            <!-- TAB 1: VUELA & BUSCADOR GLOBAL -->
+            ${this.activeDrawerTab === 'vuela'
+              ? html`
+                  <div class="drawer-card-section">
+                    <div class="drawer-section-header">
+                      <span class="drawer-section-title">✈️ (Vuela a donde quieras)</span>
+                      <span class="drawer-section-badge">Buscador</span>
                     </div>
-                    <button
-                      class="close-btn"
-                      @click=${() => (this.showWorldMapModal = false)}>
-                      ✕
-                    </button>
-                  </div>
 
-                  <!-- Global Search Input -->
-                  <div class="world-search-box">
-                    <input
-                      id="worldMapSearchInput"
-                      type="text"
-                      class="world-search-input"
-                      placeholder="Escribe cualquier ciudad del mundo (ej: Buenos Aires, Tokio, Madrid, Roma, Sidney...)"
-                      .value=${this.worldSearchQuery}
-                      @input=${(e: InputEvent) => {
-                        this.worldSearchQuery = (e.target as HTMLInputElement).value;
-                      }}
-                      @keydown=${(e: KeyboardEvent) => {
-                        if (e.key === 'Enter') {
-                          this.searchAndTeleport(this.worldSearchQuery);
-                        }
-                      }} />
-                    <button
-                      class="world-search-submit"
-                      @click=${() => this.searchAndTeleport(this.worldSearchQuery)}>
-                      Volar ✈️
-                    </button>
-                  </div>
-
-                  <!-- Region Filter Tabs -->
-                  <div class="region-tabs-row">
-                    ${worldRegions.map(
-                      (region) => html`
+                    <!-- Buscador Input con Autocompletado -->
+                    <div class="vuela-search-pill" style="width: 100%; min-width: 0;">
+                      <div class="vuela-search-box">
+                        <span class="vuela-search-icon">🔍</span>
+                        <input
+                          type="text"
+                          class="vuela-search-input"
+                          placeholder="Busca cualquier ciudad, país o lugar del mundo..."
+                          .value=${this.vuelaSearchQuery}
+                          @input=${(e: InputEvent) => {
+                            this.vuelaSearchQuery = (e.target as HTMLInputElement).value;
+                            this.showVuelaDropdown = true;
+                          }}
+                          @focus=${() => {
+                            if (this.vuelaSearchQuery.trim().length > 0) this.showVuelaDropdown = true;
+                          }}
+                          @keydown=${(e: KeyboardEvent) => {
+                            if (e.key === 'Enter') {
+                              this.executeVuelaSearch();
+                              this.showSideDrawer = false;
+                            }
+                          }}
+                        />
+                        ${this.vuelaSearchQuery.length > 0
+                          ? html`
+                              <button class="vuela-clear-btn" @click=${() => { this.vuelaSearchQuery = ''; this.showVuelaDropdown = false; }}>✕</button>
+                            `
+                          : ''}
                         <button
-                          class="region-tab-btn ${this.selectedRegion === region ? 'active' : ''}"
-                          @click=${() => (this.selectedRegion = region)}>
-                          ${region}
+                          class="vuela-search-submit"
+                          @click=${() => {
+                            this.executeVuelaSearch();
+                            this.showSideDrawer = false;
+                          }}
+                          title="Volar a este lugar">
+                          Volar 🪂
                         </button>
-                      `,
-                    )}
-                  </div>
+                      </div>
 
-                  <!-- Cities Grid -->
-                  <div class="world-cities-grid">
-                    ${filteredDestinations.map(
-                      (dest) => html`
-                        <div
-                          class="world-city-card"
-                          @click=${() =>
-                            this.flyFromOrbitToCity(
-                              dest.lat,
-                              dest.lng,
-                              dest.city,
-                              dest.country,
-                              dest.flag,
-                              dest.heading,
-                            )}>
-                          <div class="city-flag-badge">${dest.flag}</div>
-                          <div class="city-card-info">
-                            <div class="city-card-name">
-                              ${dest.city}
-                              <span class="city-weather-tag">${WEATHER_METADATA[getWeatherForCity(dest.city)].icon} ${WEATHER_METADATA[getWeatherForCity(dest.city)].name}</span>
+                      <!-- Sugerencias desplegables -->
+                      ${this.showVuelaDropdown && this.vuelaSearchQuery.trim().length > 0
+                        ? html`
+                            <div class="vuela-suggestions-dropdown" style="position: relative; top: 6px;">
+                              ${this.getFilteredVuelaSuggestions().map(
+                                (d) => html`
+                                  <div
+                                    class="vuela-suggestion-item"
+                                    @click=${() => {
+                                      this.selectVuelaDestination(d);
+                                      this.showSideDrawer = false;
+                                    }}>
+                                    <span class="vuela-sugg-flag">${d.flag}</span>
+                                    <div class="vuela-sugg-text">
+                                      <div class="vuela-sugg-city">${d.city}, ${d.country}</div>
+                                      <div class="vuela-sugg-landmark">${d.name}</div>
+                                    </div>
+                                    <span class="vuela-sugg-fly">Volar 🪂</span>
+                                  </div>
+                                `,
+                              )}
+                              <div
+                                class="vuela-suggestion-item"
+                                @click=${() => {
+                                  this.executeVuelaSearch();
+                                  this.showSideDrawer = false;
+                                }}>
+                                <span class="vuela-sugg-flag">🌐</span>
+                                <div class="vuela-sugg-text">
+                                  <div class="vuela-sugg-city">Buscar "${this.vuelaSearchQuery}" en todo el mundo</div>
+                                  <div class="vuela-sugg-landmark">Geolocalización satelital global</div>
+                                </div>
+                                <span class="vuela-sugg-fly">Explorar</span>
+                              </div>
                             </div>
-                            <div class="city-card-landmark">${dest.name}</div>
-                            <div class="city-card-desc">${dest.description}</div>
-                          </div>
-                          <button class="city-card-fly-btn">Volar ✈️</button>
-                        </div>
-                      `,
-                    )}
-                  </div>
-                </div>
-              </div>
-            `
-          : ''}
+                          `
+                        : ''}
+                    </div>
 
-        <!-- TOURIST PASSPORT MODAL -->
-        ${this.showPassportModal
+                    <!-- Quick Space / Random Buttons -->
+                    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                      ${this.isOrbitalView
+                        ? html`
+                            <button
+                              class="drawer-space-btn"
+                              style="flex: 1;"
+                              @click=${() => {
+                                this.showSideDrawer = false;
+                                this.descendToCoordinates(this.playerLat, this.playerLng, this.currentCity, this.currentCountry, this.currentFlag);
+                              }}>
+                              <span>🪂 Descender a ${this.currentCity}</span>
+                            </button>
+                          `
+                        : html`
+                            <button
+                              class="drawer-space-btn"
+                              style="flex: 1;"
+                              @click=${() => {
+                                this.showSideDrawer = false;
+                                this.launchToSpace();
+                              }}>
+                              <span>🚀 Ascender al Espacio (Google Earth 3D)</span>
+                            </button>
+                          `}
+                      <button
+                        class="drawer-chip-item"
+                        style="padding: 10px 14px; font-weight: 700;"
+                        @click=${() => {
+                          this.teleportToRandomDestination();
+                          this.showSideDrawer = false;
+                        }}
+                        title="Volar a un destino aleatorio">
+                        <span>🎲 Destino Sorpresa</span>
+                      </button>
+                    </div>
+
+                    <!-- Region Filter Tabs -->
+                    <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">Filtrar por región:</div>
+                    <div class="drawer-quick-chips">
+                      ${worldRegions.map(
+                        (region) => html`
+                          <button
+                            class="drawer-chip-item ${this.selectedRegion === region ? 'active' : ''}"
+                            @click=${() => (this.selectedRegion = region)}>
+                            ${region}
+                          </button>
+                        `,
+                      )}
+                    </div>
+
+                    <!-- Curated World Destinations List -->
+                    <div style="font-size: 11px; color: var(--muted); margin-top: 6px;">
+                      Destinos disponibles (${filteredDestinations.length}):
+                    </div>
+                    <div class="drawer-dest-grid" style="max-height: 380px; overflow-y: auto;">
+                      ${filteredDestinations.map(
+                        (dest) => html`
+                          <div
+                            class="drawer-dest-card"
+                            @click=${() => {
+                              this.flyFromOrbitToCity(dest.lat, dest.lng, dest.city, dest.country, dest.flag, dest.heading || 195);
+                              this.showSideDrawer = false;
+                            }}>
+                            <span class="drawer-card-flag">${dest.flag}</span>
+                            <div class="drawer-card-texts">
+                              <div class="drawer-card-city">
+                                <b>${dest.city}</b>, ${dest.country}
+                                <span style="font-size: 10px; margin-left: 4px; color: var(--a1);">
+                                  ${WEATHER_METADATA[getWeatherForCity(dest.city)].icon}
+                                </span>
+                              </div>
+                              <div class="drawer-card-landmark">${dest.name}</div>
+                              <div style="font-size: 10px; color: var(--muted); line-height: 1.2;">${dest.description}</div>
+                            </div>
+                            <span class="vuela-sugg-fly">Volar</span>
+                          </div>
+                        `,
+                      )}
+                    </div>
+                  </div>
+                `
+              : ''}
+
+            <!-- TAB 2: MISIONES E HITOS -->
+            ${this.activeDrawerTab === 'misiones'
+              ? html`
+                  <div class="drawer-card-section">
+                    <div class="drawer-section-header">
+                      <span class="drawer-section-title">🎯 Misiones en ${this.currentCity}</span>
+                      <span class="drawer-section-badge">
+                        ${this.missionSystem.getCompletedCount()}/${this.missionSystem.currentMissions.length} Completadas
+                      </span>
+                    </div>
+
+                    <div class="missions-list" style="max-height: none; gap: 8px;">
+                      ${this.missionSystem.currentMissions.map(
+                        (mission) => html`
+                          <div class="mission-card ${mission.completed ? 'completed' : ''}" style="padding: 10px;">
+                            <div class="mission-card-icon" style="width: 38px; height: 38px; font-size: 20px;">
+                              ${mission.icon}
+                            </div>
+                            <div class="mission-card-info">
+                              <div class="mission-card-title" style="font-size: 12.5px;">
+                                <span>${mission.title}</span>
+                                <span class="mission-xp-tag">+${mission.xpReward} XP</span>
+                              </div>
+                              <div class="mission-card-desc" style="font-size: 11px;">${mission.description}</div>
+                              <div class="mission-progress-bar-wrap">
+                                <div
+                                  class="mission-progress-bar-fill"
+                                  style="width: ${Math.min(100, Math.round((mission.progress / mission.maxProgress) * 100))}%;">
+                                </div>
+                              </div>
+                              <div class="mission-status-row">
+                                ${mission.completed
+                                  ? html`
+                                      <span class="mission-completed-badge">✅ ¡Completado!</span>
+                                    `
+                                  : mission.type === 'timed_street_hunt'
+                                    ? html`
+                                        <span class="mission-radar-cue">
+                                          ${mission.timerActive
+                                            ? `⏱️ ${Math.ceil(mission.timeRemainingSeconds || 0)}s • 📡 ${mission.radarDistanceMeters}m al ${mission.radarDirection}`
+                                            : '❌ Tiempo agotado'}
+                                        </span>
+                                        ${!mission.timerActive
+                                          ? html`
+                                              <button
+                                                class="target-descend-btn"
+                                                style="padding: 3px 8px; font-size: 10.5px;"
+                                                @click=${() => this.missionSystem.restartTimedStreetHunt()}>
+                                                🔄 Reintentar 1 min
+                                              </button>
+                                            `
+                                          : ''}
+                                      `
+                                    : mission.type === 'photo_landmarks'
+                                      ? html`
+                                          <div style="display: flex; align-items: center; justify-content: space-between; width: 100%;">
+                                            <span class="mission-radar-cue">📸 ${mission.progress}/${mission.maxProgress} edificios</span>
+                                            <button
+                                              class="drawer-chip-item"
+                                              style="padding: 2px 7px; font-size: 10.5px;"
+                                              @click=${() => this.snapStreetViewPhoto()}>
+                                              📸 Tomar Foto
+                                            </button>
+                                          </div>
+                                        `
+                                      : html`
+                                          <span class="mission-radar-cue">Progreso: ${mission.progress}/${mission.maxProgress}</span>
+                                        `}
+                              </div>
+                            </div>
+                          </div>
+                        `,
+                      )}
+                    </div>
+                  </div>
+                `
+              : ''}
+
+            <!-- TAB 3: CICLO DÍA-NOCHE & TIME SHIFT -->
+            ${this.activeDrawerTab === 'tiempo'
+              ? html`
+                  <div class="drawer-card-section">
+                    <div class="drawer-section-header">
+                      <span class="drawer-section-title">⏰ Ciclo Día-Noche & Time Shift</span>
+                      <span class="drawer-section-badge">${this.dayNightState?.periodLabel || 'Día'}</span>
+                    </div>
+
+                    <!-- Auto local time toggle -->
+                    <div
+                      class="time-shift-auto-toggle ${this.dayNightState?.isAutoLocalTime ? 'active' : ''}"
+                      @click=${() => this.toggleAutoLocalTime()}>
+                      <div class="auto-toggle-info">
+                        <div class="auto-toggle-text">Hora Local Automática</div>
+                        <div class="auto-toggle-sub">Calculada astronómicamente según las coordenadas reales de ${this.currentCity}</div>
+                      </div>
+                      <span class="auto-toggle-badge ${this.dayNightState?.isAutoLocalTime ? 'active' : ''}">
+                        ${this.dayNightState?.isAutoLocalTime ? 'ACTIVO' : 'MANUAL'}
+                      </span>
+                    </div>
+
+                    <!-- Presets Grid -->
+                    <div class="time-presets-grid">
+                      <button
+                        class="time-preset-btn ${this.dayNightState?.period === 'sunrise' ? 'active' : ''}"
+                        @click=${() => this.setTimePreset(6.5)}>
+                        <span class="time-preset-icon">🌅</span>
+                        <span>Amanecer</span>
+                      </button>
+                      <button
+                        class="time-preset-btn ${this.dayNightState?.period === 'day' ? 'active' : ''}"
+                        @click=${() => this.setTimePreset(12)}>
+                        <span class="time-preset-icon">☀️</span>
+                        <span>Mediodía</span>
+                      </button>
+                      <button
+                        class="time-preset-btn ${this.dayNightState?.period === 'sunset' ? 'active' : ''}"
+                        @click=${() => this.setTimePreset(18.5)}>
+                        <span class="time-preset-icon">🌇</span>
+                        <span>Atardecer</span>
+                      </button>
+                      <button
+                        class="time-preset-btn ${this.dayNightState?.period === 'night' ? 'active' : ''}"
+                        @click=${() => this.setTimePreset(23)}>
+                        <span class="time-preset-icon">🌙</span>
+                        <span>Noche</span>
+                      </button>
+                    </div>
+
+                    <!-- 24h Slider -->
+                    <div class="time-slider-wrap">
+                      <div class="time-slider-label">
+                        <span>Ajustar hora solar (00:00 a 23:59):</span>
+                        <b>${this.dayNightState?.timeString || '12:00'}</b>
+                      </div>
+                      <input
+                        type="range"
+                        class="time-range-input"
+                        min="0"
+                        max="23.9"
+                        step="0.25"
+                        .value=${this.dayNightState?.localHour ?? 12}
+                        @input=${(e: Event) => this.handleManualTimeSlider((e.target as HTMLInputElement).valueAsNumber)}
+                      />
+                    </div>
+                  </div>
+                `
+              : ''}
+
+            <!-- TAB 4: CLIMA & FÍSICAS -->
+            ${this.activeDrawerTab === 'clima'
+              ? html`
+                  <div class="drawer-card-section">
+                    <div class="drawer-section-header">
+                      <span class="drawer-section-title">🌦️ Clima & Físicas de Vuelo</span>
+                      <span class="drawer-section-badge">${this.currentWeather.toUpperCase()}</span>
+                    </div>
+
+                    <!-- Weather Condition Selector -->
+                    <div style="font-size: 11px; color: var(--muted);">Condición meteorológica:</div>
+                    <div class="weather-selector-pill" style="width: 100%; justify-content: space-around;">
+                      <button
+                        class="weather-option-btn ${this.currentWeather === 'clear' ? 'active' : ''}"
+                        @click=${() => this.setWeather('clear')}
+                        title="☀️ Despejado">
+                        ☀️ Despejado
+                      </button>
+                      <button
+                        class="weather-option-btn ${this.currentWeather === 'rain' ? 'active' : ''}"
+                        @click=${() => this.setWeather('rain')}
+                        title="🌧️ Lluvia">
+                        🌧️ Lluvia
+                      </button>
+                      <button
+                        class="weather-option-btn ${this.currentWeather === 'snow' ? 'active' : ''}"
+                        @click=${() => this.setWeather('snow')}
+                        title="❄️ Nieve">
+                        ❄️ Nieve
+                      </button>
+                      <button
+                        class="weather-option-btn ${this.currentWeather === 'fog' ? 'active' : ''}"
+                        @click=${() => this.setWeather('fog')}
+                        title="🌫️ Niebla">
+                        🌫️ Niebla
+                      </button>
+                    </div>
+
+                    <!-- Collision Mode Toggle -->
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 4px;">
+                      <span style="font-size: 11.5px; color: #fff; font-weight: 600;">Colisiones con edificios:</span>
+                      <button
+                        class="collision-mode-toggle ${this.collisionsEnabled ? 'active' : ''}"
+                        style="padding: 5px 12px;"
+                        @click=${() => this.toggleCollisions()}
+                        title="Alternar Colisiones (Tecla T)">
+                        ${this.collisionsEnabled ? '🛡️ Activadas' : '🕊️ Vuelo Libre'}
+                      </button>
+                    </div>
+                  </div>
+                `
+              : ''}
+
+            <!-- TAB 5: PASAPORTE & ÁLBUM 360° -->
+            ${this.activeDrawerTab === 'pasaporte'
+              ? html`
+                  <div class="drawer-card-section">
+                    <div class="drawer-section-header">
+                      <span class="drawer-section-title">🛂 Pasaporte de Viajero</span>
+                      <span class="drawer-section-badge">${this.passportStamps.length} Ciudades</span>
+                    </div>
+
+                    <div class="passport-stats-bar" style="margin-bottom: 8px;">
+                      <div>Ciudades: <b>${this.passportStamps.length}</b></div>
+                      <div>Distancia: <b>${formattedDistance}</b></div>
+                      <div>XP: <b>${this.currentScore} pts</b></div>
+                    </div>
+
+                    <!-- Stamps Collection -->
+                    <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">Sellos oficiales desbloqueados:</div>
+                    <div class="passport-stamps-grid" style="max-height: 200px; overflow-y: auto;">
+                      ${this.passportStamps.map(
+                        (stamp) => html`
+                          <div class="passport-stamp-badge" style="padding: 6px;">
+                            <div class="stamp-ink-circle" style="width: 58px; height: 58px;">
+                              <span class="stamp-souvenir" style="font-size: 16px;">${stamp.souvenirIcon}</span>
+                              <span class="stamp-city" style="font-size: 7.5px;">${stamp.cityName.toUpperCase()}</span>
+                              <span class="stamp-flag" style="font-size: 10px;">${stamp.flag}</span>
+                              <span class="stamp-date" style="font-size: 6.5px;">${stamp.unlockedAt}</span>
+                            </div>
+                            <div class="stamp-country" style="font-size: 9px;">${stamp.country}</div>
+                          </div>
+                        `,
+                      )}
+                    </div>
+
+                    <!-- Photo Gallery -->
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 10px;">
+                      <span style="font-size: 11.5px; font-weight: 700; color: #fff;">📸 Álbum 360° (${this.capturedPhotos.length})</span>
+                      <button
+                        class="drawer-chip-item"
+                        style="padding: 4px 8px; font-size: 10.5px;"
+                        @click=${() => this.snapStreetViewPhoto()}>
+                        📸 Tomar Foto
+                      </button>
+                    </div>
+
+                    ${this.capturedPhotos.length === 0
+                      ? html`<div style="font-size: 11px; color: var(--muted); text-align: center; padding: 12px 0;">No has tomado fotos aún. ¡Usa la tecla C o el botón superior!</div>`
+                      : html`
+                          <div style="display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; margin-top: 6px;">
+                            ${this.capturedPhotos.map(
+                              (p) => html`
+                                <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 6px 10px;">
+                                  <div>
+                                    <div style="font-size: 11px; font-weight: 700; color: #fff;">${p.locationName}</div>
+                                    <div style="font-size: 9.5px; color: var(--muted);">🧭 ${p.heading}° • 🕒 ${p.timestamp} • 🚀 ${p.speedKmh} km/h</div>
+                                  </div>
+                                  <span style="font-size: 16px;">📷</span>
+                                </div>
+                              `,
+                            )}
+                          </div>
+                        `}
+                  </div>
+                `
+              : ''}
+
+            <!-- TAB 6: AJUSTES & HERRAMIENTAS -->
+            ${this.activeDrawerTab === 'ajustes'
+              ? html`
+                  <div class="drawer-card-section">
+                    <div class="drawer-section-header">
+                      <span class="drawer-section-title">⚙️ Ajustes & Herramientas</span>
+                    </div>
+
+                    <!-- Camera Perspective Selector -->
+                    <div style="font-size: 11px; color: var(--muted);">Modo de Cámara:</div>
+                    <div class="segment-group" style="width: 100%;">
+                      <button
+                        class="seg-btn ${this.cameraMode === 'first_person' ? 'active' : ''}"
+                        style="flex: 1; padding: 8px;"
+                        @click=${() => this.setCameraMode('first_person')}>
+                        👁️ 1ª Persona (Cabina)
+                      </button>
+                      <button
+                        class="seg-btn ${this.cameraMode === 'third_person' ? 'active' : ''}"
+                        style="flex: 1; padding: 8px;"
+                        @click=${() => this.setCameraMode('third_person')}>
+                        🦸 3ª Persona (Superhéroe)
+                      </button>
+                    </div>
+
+                    <!-- Theme Swatches -->
+                    <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">Tema visual de interfaz:</div>
+                    <div class="theme-swatches" style="margin-top: 0;">
+                      ${MapApp.THEMES.map(
+                        (t) => html`
+                          <button
+                            class="theme-swatch ${this.uiTheme === t.id ? 'selected' : ''}"
+                            style="--sw:${t.c}"
+                            title=${t.label}
+                            aria-label=${t.label}
+                            @click=${() => this.setTheme(t.id)}></button>
+                        `,
+                      )}
+                    </div>
+
+                    <!-- Audio Toggle -->
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 4px;">
+                      <span style="font-size: 11.5px; color: #fff; font-weight: 600;">Efectos de sonido:</span>
+                      <button
+                        class="drawer-chip-item"
+                        style="padding: 6px 12px;"
+                        @click=${() => this.toggleAudio()}>
+                        <span>${this.isMuted ? '🔇 Desactivado' : '🔊 Activado'}</span>
+                      </button>
+                    </div>
+
+                    <!-- Controles rápidos / Ayuda -->
+                    <div style="font-size: 10.5px; color: var(--muted); line-height: 1.4; margin-top: 6px; background: rgba(255,255,255,0.03); padding: 8px; border-radius: 8px;">
+                      <b>💡 Guía de manejo:</b><br />
+                      • <b>W / Arriba</b>: Acelerar (Gas)<br />
+                      • <b>Shift</b>: Turbo supersónico<br />
+                      • <b>S / Abajo</b>: Frenar<br />
+                      • <b>E / Q</b>: Subir / Bajar altitud<br />
+                      • <b>R</b>: Giro acrobático 360°<br />
+                      • <b>Espacio / G</b>: Ascender al espacio exterior<br />
+                      • <b>Joystick táctil</b>: Gira y navega con el pulgar
+                    </div>
+                  </div>
+                `
+              : ''}
+          </div>
+        </aside>
+
+        <!-- ========================================================
+             BOTTOM HUD: SOLO MANEJO DEL PERSONAJE / NAVEGACIÓN
+             ======================================================== -->
+        ${this.isOrbitalView
           ? html`
-              <div
-                class="modal-backdrop"
-                @click=${() => (this.showPassportModal = false)}>
-                <div
-                  class="passport-modal"
-                  @click=${(e: Event) => e.stopPropagation()}>
-                  <div class="drawer-header">
-                    <div class="passport-title-wrap">
-                      <span class="passport-gold-emblem">🛂</span>
-                      <div>
-                        <h2>Pasaporte de Viajero</h2>
-                        <div class="passport-subtitle">
-                          Sellos oficiales desbloqueados por el mundo
+              <!-- Floating Target Card when user clicks ANYWHERE on Earth in Orbit -->
+              ${this.selectedOrbitalTarget
+                ? html`
+                    <div class="orbital-target-card">
+                      <div class="target-card-info">
+                        <span class="target-card-flag">${this.selectedOrbitalTarget.flag || '📍'}</span>
+                        <div class="target-card-texts">
+                          <div class="target-card-title">${this.selectedOrbitalTarget.name}</div>
+                          <div class="target-card-coords">
+                            ${this.selectedOrbitalTarget.lat.toFixed(4)}°, ${this.selectedOrbitalTarget.lng.toFixed(4)}°
+                          </div>
                         </div>
                       </div>
+                      <div class="target-card-actions">
+                        <button
+                          class="target-descend-btn"
+                          @click=${() =>
+                            this.descendToCoordinates(
+                              this.selectedOrbitalTarget!.lat,
+                              this.selectedOrbitalTarget!.lng,
+                              this.selectedOrbitalTarget!.name,
+                              this.selectedOrbitalTarget!.country,
+                              this.selectedOrbitalTarget!.flag,
+                            )}>
+                          ⚡ Descender en Vuelo Aquí 🪂
+                        </button>
+                        <button class="target-close-btn" @click=${() => (this.selectedOrbitalTarget = null)}>✕</button>
+                      </div>
                     </div>
+                  `
+                : ''}
+
+              <!-- Space Globe Navigation Controls -->
+              <div class="earth-nav-controls">
+                <button class="earth-nav-btn" @click=${() => this.zoomGlobe(0.6)} title="Acercar Globo (＋)">＋</button>
+                <button class="earth-nav-btn" @click=${() => this.zoomGlobe(1.5)} title="Alejar Globo (－)">－</button>
+                <button class="earth-nav-btn" @click=${() => this.spinGlobe('east')} title="Girar Globo Este (🔄)">🔄</button>
+                <button class="earth-nav-btn" @click=${() => this.resetNorth()} title="Alinear Norte (🧭)">🧭</button>
+                <button
+                  class="earth-nav-btn"
+                  style="font-size: 11px; padding: 0 10px; width: auto;"
+                  @click=${() => this.descendToCoordinates(this.playerLat, this.playerLng, this.currentCity, this.currentCountry, this.currentFlag)}
+                  title="Descender en vuelo hacia la Tierra">
+                  🪂 Descender
+                </button>
+              </div>
+            `
+          : html`
+              <!-- Bottom HUD: Joystick, Camera & Flight Cluster -->
+              <footer class="game-bottom-hud">
+                <!-- LEFT: Virtual Steering Joystick (Ergonómico para pulgar izquierdo) -->
+                <div
+                  class="virtual-joystick-base"
+                  @pointerdown=${(e: PointerEvent) => this.handleJoystickPointerDown(e)}
+                  @pointermove=${(e: PointerEvent) => this.handleJoystickPointerMove(e)}
+                  @pointerup=${(e: PointerEvent) => this.handleJoystickPointerUp(e)}
+                  @pointercancel=${(e: PointerEvent) => this.handleJoystickPointerUp(e)}
+                  title="Joystick 360° (Arrastra para girar y volar)">
+                  <div class="joystick-ring"></div>
+                  <div
+                    class="joystick-knob"
+                    style="transform: translate(${this.joystickKnobX}px, ${this.joystickKnobY}px);">
+                    <span class="joystick-icon">🧭</span>
+                  </div>
+                </div>
+
+                <!-- CENTER: Camera Mode & Zoom Dock -->
+                <div class="camera-zoom-bar">
+                  <div class="segment-group">
                     <button
-                      class="close-btn"
-                      @click=${() => (this.showPassportModal = false)}>
-                      ✕
+                      class="seg-btn ${this.cameraMode === 'first_person' ? 'active' : ''}"
+                      @click=${() => this.setCameraMode('first_person')}
+                      title="Vista en 1ª Persona (Tecla V)">
+                      👁️ 1ª
+                    </button>
+                    <button
+                      class="seg-btn ${this.cameraMode === 'third_person' ? 'active' : ''}"
+                      @click=${() => this.setCameraMode('third_person')}
+                      title="Vista en 3ª Persona">
+                      🦸 3ª
                     </button>
                   </div>
 
-                  <div class="passport-stats-bar">
-                    <div>
-                      Ciudades desbloqueadas:
-                      <b>${this.passportStamps.length}</b>
-                    </div>
-                    <div>
-                      Distancia Total:
-                      <b>${formattedDistance}</b>
-                    </div>
-                    <div>
-                      Puntos XP:
-                      <b>${this.currentScore} pts</b>
-                    </div>
+                  <div class="segment-group zoom-presets-group">
+                    <button
+                      class="seg-btn ${this.zoomPreset === 'close' ? 'active' : ''}"
+                      @click=${() => this.setZoomPreset('close')}
+                      title="Zoom Cerca">
+                      Cerca
+                    </button>
+                    <button
+                      class="seg-btn ${this.zoomPreset === 'medium' ? 'active' : ''}"
+                      @click=${() => this.setZoomPreset('medium')}
+                      title="Zoom Medio">
+                      Medio
+                    </button>
+                    <button
+                      class="seg-btn ${this.zoomPreset === 'sky' ? 'active' : ''}"
+                      @click=${() => this.setZoomPreset('sky')}
+                      title="Vista del Cielo">
+                      Cielo
+                    </button>
                   </div>
 
-                  <div class="passport-stamps-grid">
-                    ${this.passportStamps.map(
-                      (stamp) => html`
-                        <div class="passport-stamp-badge">
-                          <div class="stamp-ink-circle">
-                            <span class="stamp-souvenir"
-                              >${stamp.souvenirIcon}</span
-                            >
-                            <span class="stamp-city"
-                              >${stamp.cityName.toUpperCase()}</span
-                            >
-                            <span class="stamp-flag">${stamp.flag}</span>
-                            <span class="stamp-date">${stamp.unlockedAt}</span>
-                          </div>
-                          <div class="stamp-country">${stamp.country}</div>
-                        </div>
-                      `,
-                    )}
+                  <div class="zoom-stepper">
+                    <button class="zoom-step-btn" @click=${() => this.zoomIn()} title="Acercar">＋</button>
+                    <button class="zoom-step-btn" @click=${() => this.zoomOut()} title="Alejar">－</button>
                   </div>
                 </div>
-              </div>
-            `
-          : ''}
+
+                <!-- RIGHT: Flight Drive Cluster (Ergonómico para pulgar derecho) -->
+                <div class="drive-buttons-cluster">
+                  <div class="vertical-controls">
+                    <button
+                      class="btn-vert ${this.isClimbing ? 'pressing' : ''}"
+                      @pointerdown=${() => {
+                        this.isClimbing = true;
+                      }}
+                      @pointerup=${() => {
+                        this.isClimbing = false;
+                      }}
+                      @pointerleave=${() => {
+                        this.isClimbing = false;
+                      }}
+                      title="Ascender Altitud (E)">
+                      ▲ SUBIR
+                    </button>
+                    <button
+                      class="btn-vert btn-space-launch-vert"
+                      @click=${() => this.launchToSpace()}
+                      title="Subir al Espacio Exterior y ver toda la Tierra (Espacio / G)">
+                      🚀 ESPACIO
+                    </button>
+                    <button
+                      class="btn-vert ${this.isDiving ? 'pressing' : ''}"
+                      @pointerdown=${() => {
+                        this.isDiving = true;
+                      }}
+                      @pointerup=${() => {
+                        this.isDiving = false;
+                      }}
+                      @pointerleave=${() => {
+                        this.isDiving = false;
+                      }}
+                      title="Descender Altitud (Q)">
+                      ▼ BAJAR
+                    </button>
+                  </div>
+
+                  <!-- Acrobacia: Giro de Barril 360° -->
+                  <button
+                    class="drive-btn btn-stunt"
+                    @click=${() => this.triggerStuntRoll()}
+                    title="Acrobacia: Giro de Barril (Tecla R)">
+                    🌀 GIRO
+                  </button>
+
+                  <!-- Turbo Supersónico -->
+                  <button
+                    class="drive-btn btn-turbo ${this.isTurboActive ? 'pressing' : ''}"
+                    @pointerdown=${() => this.triggerTurboBoost()}
+                    title="Turbo Supersónico Mach (Tecla Shift)">
+                    ⚡ TURBO
+                  </button>
+
+                  <!-- Frenar -->
+                  <button
+                    class="drive-btn btn-brake ${this.isBraking ? 'pressing' : ''}"
+                    @pointerdown=${() => {
+                      this.isBraking = true;
+                    }}
+                    @pointerup=${() => {
+                      this.isBraking = false;
+                    }}
+                    @pointerleave=${() => {
+                      this.isBraking = false;
+                    }}
+                    title="Frenar (S / Flecha abajo)">
+                    🛑 FRENO
+                  </button>
+
+                  <!-- Acelerar -->
+                  <button
+                    class="drive-btn btn-gas ${this.isAccelerating ? 'pressing' : ''}"
+                    @pointerdown=${() => {
+                      this.isAccelerating = true;
+                    }}
+                    @pointerup=${() => {
+                      this.isAccelerating = false;
+                    }}
+                    @pointerleave=${() => {
+                      this.isAccelerating = false;
+                    }}
+                    title="Acelerar hacia adelante (W / Flecha arriba)">
+                    ⚡ ACEL
+                  </button>
+                </div>
+              </footer>
+            `}
 
         ${this.showThemePicker
           ? html`
